@@ -1,0 +1,644 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// USERS & PROFILES
+// ============================================================
+
+enum SignupStage {
+  anonymous
+  contact_provided
+  otp_verified
+  profile_started
+  active
+}
+
+enum UserStatus {
+  active
+  suspended
+  blocked
+  deleted
+}
+
+enum ProfileOwnerType {
+  self
+  staff_assisted
+}
+
+enum Gender {
+  male
+  female
+  other
+}
+
+enum LookingFor {
+  dating
+  relationship
+  life_partner
+  friendship
+  travel_partner
+  other
+}
+
+model User {
+  id               String           @id @default(uuid())
+  email            String?          @unique
+  phone            String?          @unique
+  whatsapp         String?          @unique
+  telegram         String?          @unique
+  isVerifiedLead   Boolean          @default(false) @map("is_verified_lead")
+  verifiedVia      String?          @map("verified_via") // 'phone' | 'whatsapp' | 'telegram' | 'facebook' | 'email'
+  hideContactNumber Boolean         @default(false) @map("hide_contact_number")
+  leadStage        String           @default("incomplete") @map("lead_stage") // 'incomplete' | 'engaged' | 'complete'
+  age              Int?
+  passwordHash     String?          @map("password_hash")
+
+  // --- Lead intelligence (ad funnel) ---
+  // Channel the lead picked, so notifications go where they actually read them.
+  preferredChannel String?          @map("preferred_channel")
+  // 0-100, recomputed by lib/leads.ts on every meaningful funnel event.
+  leadScore        Int              @default(0) @map("lead_score")
+  // Where the visitor physically is, resolved from edge geo headers.
+  geoCountry       String?          @map("geo_country")
+  geoCity          String?          @map("geo_city")
+  // Expat segment: home country inferred from their phone country code.
+  originCountry    String?          @map("origin_country")
+  language         String?          // 'en' | 'hi' | 'ur'
+  lastNotifiedAt   DateTime?        @map("last_notified_at")
+  signupStage      SignupStage      @default(anonymous) @map("signup_stage")
+  status           UserStatus       @default(active)
+  profileOwnerType ProfileOwnerType @default(self) @map("profile_owner_type")
+  createdByStaffId String?          @map("created_by_staff_id")
+  anonymousId      String?          @unique @map("anonymous_id")
+  lastActiveAt     DateTime?        @map("last_active_at")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+
+  createdByStaff StaffAccount? @relation("StaffCreatedUsers", fields: [createdByStaffId], references: [id])
+  profile        Profile?
+
+  sentInteractions     Interaction[]              @relation("ActorInteractions")
+  receivedInteractions Interaction[]              @relation("TargetInteractions")
+  matchesAsA           Match[]                    @relation("MatchUserA")
+  matchesAsB           Match[]                    @relation("MatchUserB")
+  conversationParts    ConversationParticipant[]
+  sentMessages         Message[]                  @relation("UserMessages")
+  onBehalfMessages     Message[]                  @relation("OnBehalfMessages")
+  assignments          AgentAssignment[]          @relation("AssignedUser")
+  assignmentHistories  AssignmentHistory[]
+  utmAttribution       UtmAttribution?
+  reports              Report[]                   @relation("Reporter")
+  reportedBy           Report[]                   @relation("Reported")
+  blockedUsers         BlockedUser[]              @relation("Blocker")
+  blockedByUsers       BlockedUser[]              @relation("Blocked")
+  contactConsentsGiven ContactConsent[]            @relation("Granter")
+  contactConsentsRecv  ContactConsent[]            @relation("Receiver")
+  customerRequirements CustomerRequirements?
+  analyticsEvents      AnalyticsEvent[]
+  customerConversations    Conversation[]             @relation("CustomerConversations")
+  representedConversations Conversation[]             @relation("RepresentedConversations")
+  identities               LeadIdentity[]
+
+  @@index([leadStage, leadScore])
+  @@map("users")
+}
+
+// ============================================================
+// LEAD IDENTITIES
+// ============================================================
+// One lead, many ways of reaching them. Replaces the pattern of adding a new
+// unique column to `User` for every channel, and lets the same person be
+// recognised whichever channel they come back through.
+
+model LeadIdentity {
+  id         String    @id @default(uuid())
+  userId     String    @map("user_id")
+  // 'device' | 'phone' | 'whatsapp' | 'telegram' | 'facebook'
+  // | 'messenger_psid' | 'webpush' | 'email'
+  kind       String
+  value      String
+  // Human-readable hint for the admin list, e.g. "+971 50 ••• 12".
+  label      String?
+  isPrimary  Boolean   @default(false) @map("is_primary")
+  verifiedAt DateTime? @map("verified_at")
+  lastSeenAt DateTime? @map("last_seen_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([kind, value])
+  @@index([userId])
+  @@map("lead_identities")
+}
+
+model Profile {
+  id                   String    @id @default(uuid())
+  userId               String    @unique @map("user_id")
+  displayName          String?   @map("display_name")
+  dateOfBirth          DateTime? @map("date_of_birth")
+  gender               Gender?
+  country              String?
+  city                 String?
+  bio                  String?
+  interests            String[]  @default([])
+  lookingFor           LookingFor? @map("looking_for")
+  relationshipIntention String?  @map("relationship_intention")
+  isVerified           Boolean   @default(false) @map("is_verified")
+  isVisible            Boolean   @default(true) @map("is_visible")
+  profileCompleteness  Int       @default(0) @map("profile_completeness")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  photos      ProfilePhoto[]
+  travelPlans TravelPlan[]
+
+  @@map("profiles")
+}
+
+// ============================================================
+// TRAVEL PLANS
+// ============================================================
+// The heart of the product: a curated profile announces an upcoming trip, and
+// visitors in that city are matched to them. Drives the travel ribbon, the
+// urgency badge, and the ranking in `GET /api/profiles`.
+
+model TravelPlan {
+  id        String   @id @default(uuid())
+  profileId String   @map("profile_id")
+  country   String
+  city      String
+  fromDate  DateTime @map("from_date")
+  toDate    DateTime @map("to_date")
+  // Shown on the card, e.g. "Looking for someone local to show me around".
+  note      String?
+  photoUrl  String?  @map("photo_url")
+  timing    String?  @default("soon")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  profile Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([city, fromDate])
+  @@index([country, fromDate])
+  @@map("travel_plans")
+}
+
+model ProfilePhoto {
+  id              String  @id @default(uuid())
+  profileId       String  @map("profile_id")
+  filePath        String  @map("file_path")
+  isPrimary       Boolean @default(false) @map("is_primary")
+  sortOrder       Int     @default(0) @map("sort_order")
+  uploadedBy      String  @default("user") @map("uploaded_by") // "user" or "staff"
+  uploadedByStaffId String? @map("uploaded_by_staff_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  profile        Profile       @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  uploadedStaff  StaffAccount? @relation(fields: [uploadedByStaffId], references: [id])
+
+  @@map("profile_photos")
+}
+
+// ============================================================
+// STAFF & RBAC
+// ============================================================
+
+enum StaffRole {
+  admin
+  agent
+}
+
+enum StaffStatus {
+  active
+  suspended
+  deactivated
+}
+
+model StaffAccount {
+  id           String      @id @default(uuid())
+  email        String      @unique
+  passwordHash String      @map("password_hash")
+  displayName  String      @map("display_name")
+  role         StaffRole
+  status       StaffStatus @default(active)
+  createdById  String?     @map("created_by_id")
+  permissions  Json        @default("{}")
+  lastActiveAt DateTime?   @map("last_active_at")
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+
+  createdBy      StaffAccount?  @relation("StaffCreatedBy", fields: [createdById], references: [id])
+  createdStaff   StaffAccount[] @relation("StaffCreatedBy")
+  createdUsers   User[]         @relation("StaffCreatedUsers")
+  uploadedPhotos ProfilePhoto[]
+
+  agentAssignments     AgentAssignment[]   @relation("AgentStaff")
+  assignedByHistory    AgentAssignment[]   @relation("AssignedByStaff")
+  assignmentHistPerf   AssignmentHistory[] @relation("PerformedByStaff")
+  assignmentHistOld    AssignmentHistory[] @relation("OldAgentStaff")
+  assignmentHistNew    AssignmentHistory[] @relation("NewAgentStaff")
+  staffMessages        Message[]           @relation("StaffMessages")
+  campaignRoutes       CampaignAgentRoute[] @relation("RoutedAgent")
+  campaignRouteCreator CampaignAgentRoute[] @relation("RouteCreator")
+  campaignCreator      Campaign[]          @relation("CampaignCreator")
+  reviewedReports      Report[]            @relation("ReviewedBy")
+  auditLogs            AuditLog[]
+  createdRequirements  CustomerRequirements[] @relation("RequirementsCreator")
+
+  @@map("staff_accounts")
+}
+
+// ============================================================
+// INTERACTIONS & MATCHING
+// ============================================================
+
+enum InteractionType {
+  like
+  pass
+  save
+  connect
+}
+
+enum InteractionStatus {
+  pending
+  accepted
+  declined
+  expired
+}
+
+model Interaction {
+  id           String            @id @default(uuid())
+  actorUserId  String            @map("actor_user_id")
+  targetUserId String            @map("target_user_id")
+  type         InteractionType
+  status       InteractionStatus @default(pending)
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
+
+  actor  User @relation("ActorInteractions", fields: [actorUserId], references: [id], onDelete: Cascade)
+  target User @relation("TargetInteractions", fields: [targetUserId], references: [id], onDelete: Cascade)
+
+  @@unique([actorUserId, targetUserId, type])
+  @@map("interactions")
+}
+
+enum MatchStatus {
+  active
+  unmatched
+}
+
+model Match {
+  id        String      @id @default(uuid())
+  userAId   String      @map("user_a_id")
+  userBId   String      @map("user_b_id")
+  matchedAt DateTime    @default(now()) @map("matched_at")
+  status    MatchStatus @default(active)
+
+  userA        User          @relation("MatchUserA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB        User          @relation("MatchUserB", fields: [userBId], references: [id], onDelete: Cascade)
+  conversation Conversation?
+
+  @@unique([userAId, userBId])
+  @@map("matches")
+}
+
+// ============================================================
+// MESSAGING
+// ============================================================
+
+enum ConversationType {
+  direct
+  assisted
+}
+
+enum ConversationStatus {
+  active
+  archived
+  blocked
+}
+
+model Conversation {
+  id                 String             @id @default(uuid())
+  matchId                  String?            @unique @map("match_id")
+  type                     ConversationType   @default(direct)
+  status                   ConversationStatus @default(active)
+  customerUserId           String?            @map("customer_user_id")
+  representedProfileUserId String?            @map("represented_profile_user_id")
+  lastMessageAt            DateTime?          @map("last_message_at")
+  lastMessagePreview       String?            @map("last_message_preview")
+  createdAt                DateTime           @default(now()) @map("created_at")
+  updatedAt                DateTime           @updatedAt @map("updated_at")
+
+  match                  Match?                    @relation(fields: [matchId], references: [id])
+  customerUser           User?                     @relation("CustomerConversations", fields: [customerUserId], references: [id])
+  representedProfileUser User?                     @relation("RepresentedConversations", fields: [representedProfileUserId], references: [id])
+  participants           ConversationParticipant[]
+  messages               Message[]
+
+  @@map("conversations")
+}
+
+model ConversationParticipant {
+  id             String    @id @default(uuid())
+  conversationId String    @map("conversation_id")
+  userId         String    @map("user_id")
+  unreadCount    Int       @default(0) @map("unread_count")
+  lastReadAt     DateTime? @map("last_read_at")
+  joinedAt       DateTime  @default(now()) @map("joined_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@map("conversation_participants")
+}
+
+enum MessageContentType {
+  text
+  image
+  video
+  emoji
+  system
+}
+
+enum MessageStatus {
+  sent
+  delivered
+  read
+  deleted
+}
+
+model Message {
+  id             String             @id @default(uuid())
+  conversationId String             @map("conversation_id")
+  senderUserId   String?            @map("sender_user_id")
+  senderStaffId  String?            @map("sender_staff_id")
+  sentOnBehalfOf String?            @map("sent_on_behalf_of")
+  content        String
+  contentType    MessageContentType @default(text) @map("content_type")
+  mediaUrl       String?            @map("media_url")
+  status         MessageStatus      @default(sent)
+  isAssisted     Boolean            @default(false) @map("is_assisted")
+  deletedAt      DateTime?          @map("deleted_at")
+  createdAt      DateTime           @default(now()) @map("created_at")
+
+  conversation Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderUser   User?         @relation("UserMessages", fields: [senderUserId], references: [id])
+  senderStaff  StaffAccount? @relation("StaffMessages", fields: [senderStaffId], references: [id])
+  onBehalfOf   User?         @relation("OnBehalfMessages", fields: [sentOnBehalfOf], references: [id])
+
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
+
+// ============================================================
+// ASSIGNMENTS
+// ============================================================
+
+enum AssignmentStatus {
+  active
+  transferred
+  removed
+}
+
+model AgentAssignment {
+  id         String           @id @default(uuid())
+  userId     String           @map("user_id")
+  agentId    String           @map("agent_id")
+  assignedBy String           @map("assigned_by")
+  status     AssignmentStatus @default(active)
+  assignedAt DateTime         @default(now()) @map("assigned_at")
+  removedAt  DateTime?        @map("removed_at")
+  notes      String?
+
+  user       User         @relation("AssignedUser", fields: [userId], references: [id], onDelete: Cascade)
+  agent      StaffAccount @relation("AgentStaff", fields: [agentId], references: [id])
+  assignedByStaff StaffAccount @relation("AssignedByStaff", fields: [assignedBy], references: [id])
+
+  @@map("agent_assignments")
+}
+
+enum AssignmentAction {
+  assigned
+  transferred
+  removed
+}
+
+model AssignmentHistory {
+  id              String           @id @default(uuid())
+  userId          String           @map("user_id")
+  previousAgentId String?          @map("previous_agent_id")
+  newAgentId      String?          @map("new_agent_id")
+  action          AssignmentAction
+  performedBy     String           @map("performed_by")
+  performedAt     DateTime         @default(now()) @map("performed_at")
+  reason          String?
+
+  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  previousAgent    StaffAccount? @relation("OldAgentStaff", fields: [previousAgentId], references: [id])
+  newAgent         StaffAccount? @relation("NewAgentStaff", fields: [newAgentId], references: [id])
+  performedByStaff StaffAccount  @relation("PerformedByStaff", fields: [performedBy], references: [id])
+
+  @@map("assignment_history")
+}
+
+// ============================================================
+// CAMPAIGNS & ATTRIBUTION
+// ============================================================
+
+enum CampaignPlatform {
+  facebook
+  instagram
+  tiktok
+  google
+  other
+}
+
+enum CampaignStatus {
+  active
+  paused
+  ended
+}
+
+model Campaign {
+  id           String           @id @default(uuid())
+  name         String
+  platform     CampaignPlatform @default(facebook)
+  utmSource    String?          @map("utm_source")
+  utmMedium    String?          @map("utm_medium")
+  utmCampaign  String           @unique @map("utm_campaign")
+  status       CampaignStatus   @default(active)
+  createdById  String           @map("created_by_id")
+  createdAt    DateTime         @default(now()) @map("created_at")
+
+  createdBy StaffAccount         @relation("CampaignCreator", fields: [createdById], references: [id])
+  routes    CampaignAgentRoute[]
+  attributions UtmAttribution[]
+
+  @@map("campaigns")
+}
+
+model CampaignAgentRoute {
+  id         String  @id @default(uuid())
+  campaignId String  @map("campaign_id")
+  agentId    String  @map("agent_id")
+  isActive   Boolean @default(true) @map("is_active")
+  createdById String @map("created_by_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  campaign  Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  agent     StaffAccount @relation("RoutedAgent", fields: [agentId], references: [id])
+  createdBy StaffAccount @relation("RouteCreator", fields: [createdById], references: [id])
+
+  @@map("campaign_agent_routes")
+}
+
+model UtmAttribution {
+  id          String   @id @default(uuid())
+  userId      String?  @unique @map("user_id")
+  anonymousId String?  @map("anonymous_id")
+  utmSource   String?  @map("utm_source")
+  utmMedium   String?  @map("utm_medium")
+  utmCampaign String?  @map("utm_campaign")
+  utmContent  String?  @map("utm_content")
+  utmTerm     String?  @map("utm_term")
+  referrerUrl String?  @map("referrer_url")
+  landingPage String?  @map("landing_page")
+  ipAddress   String?  @map("ip_address")
+  userAgent   String?  @map("user_agent")
+  campaignId  String?  @map("campaign_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user     User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaign Campaign? @relation(fields: [campaignId], references: [id])
+
+  @@map("utm_attributions")
+}
+
+// ============================================================
+// ANALYTICS & AUDIT
+// ============================================================
+
+model AnalyticsEvent {
+  id          String   @id @default(uuid())
+  userId      String?  @map("user_id")
+  anonymousId String?  @map("anonymous_id")
+  eventType   String   @map("event_type")
+  eventData   Json?    @map("event_data")
+  utmCampaign String?  @map("utm_campaign")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([eventType, createdAt])
+  @@map("analytics_events")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  staffId    String   @map("staff_id")
+  action     String
+  targetType String   @map("target_type")
+  targetId   String   @map("target_id")
+  details    Json?
+  ipAddress  String?  @map("ip_address")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  staff StaffAccount @relation(fields: [staffId], references: [id])
+
+  @@index([action, createdAt])
+  @@map("audit_logs")
+}
+
+// ============================================================
+// REPORTS & MODERATION
+// ============================================================
+
+enum ReportReason {
+  spam
+  fake_profile
+  harassment
+  inappropriate_content
+  other
+}
+
+enum ReportStatus {
+  pending
+  reviewed
+  action_taken
+  dismissed
+}
+
+model Report {
+  id             String       @id @default(uuid())
+  reporterId     String       @map("reporter_id")
+  reportedUserId String       @map("reported_user_id")
+  reason         ReportReason
+  description    String?
+  status         ReportStatus @default(pending)
+  reviewedBy     String?      @map("reviewed_by")
+  reviewedAt     DateTime?    @map("reviewed_at")
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  reporter     User          @relation("Reporter", fields: [reporterId], references: [id])
+  reportedUser User          @relation("Reported", fields: [reportedUserId], references: [id])
+  reviewer     StaffAccount? @relation("ReviewedBy", fields: [reviewedBy], references: [id])
+
+  @@map("reports")
+}
+
+model BlockedUser {
+  id        String   @id @default(uuid())
+  blockerId String   @map("blocker_id")
+  blockedId String   @map("blocked_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  blocker User @relation("Blocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked User @relation("Blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+  @@map("blocked_users")
+}
+
+model ContactConsent {
+  id          String    @id @default(uuid())
+  granterId   String    @map("granter_id")
+  receiverId  String    @map("receiver_id")
+  consentType String    @map("consent_type") // "phone", "email", "whatsapp"
+  grantedAt   DateTime  @default(now()) @map("granted_at")
+  revokedAt   DateTime? @map("revoked_at")
+
+  granter  User @relation("Granter", fields: [granterId], references: [id])
+  receiver User @relation("Receiver", fields: [receiverId], references: [id])
+
+  @@map("contact_consents")
+}
+
+model CustomerRequirements {
+  id                    String   @id @default(uuid())
+  userId                String   @unique @map("user_id")
+  ageRangeMin           Int?     @map("age_range_min")
+  ageRangeMax           Int?     @map("age_range_max")
+  preferredGender       Gender?  @map("preferred_gender")
+  preferredCountries    String[] @default([]) @map("preferred_countries")
+  relationshipIntention String?  @map("relationship_intention")
+  travelDestination     String?  @map("travel_destination")
+  interests             String[] @default([])
+  additionalNotes       String?  @map("additional_notes")
+  createdById           String   @map("created_by_id")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdBy StaffAccount @relation("RequirementsCreator", fields: [createdById], references: [id])
+
+  @@map("customer_requirements")
+}

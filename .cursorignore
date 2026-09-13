@@ -1,0 +1,12 @@
+﻿node_modules/
+.next/
+.pgdata/
+test-results/
+coverage/
+dist/
+build/
+*.log
+qa_screenshots_ad_funnel/
+qa_screenshots_step3/
+scratch/
+.tsbuildinfo
