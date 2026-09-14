@@ -8,7 +8,7 @@
  *      we fully own for telling someone their reply arrived.
  */
 
-const CACHE = 'heartlink-v1';
+const CACHE = 'heartlink-v2';
 const SHELL = ['/', '/manifest.json', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', (event) => {
@@ -90,7 +90,7 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const target = (event.notification.data && event.notification.data.url) || '/';
+  const target = (event.notification.data && event.notification.data.url) || '/?tab=messenger';
 
   event.waitUntil(
     self.clients
@@ -98,11 +98,14 @@ self.addEventListener('notificationclick', (event) => {
       .then((clientList) => {
         for (const client of clientList) {
           if (client.url.includes(self.location.origin) && 'focus' in client) {
-            client.navigate(target);
+            if (typeof client.navigate === 'function') {
+              return client.navigate(target).then((c) => (c && c.focus ? c.focus() : client.focus()));
+            }
             return client.focus();
           }
         }
-        return self.clients.openWindow(target);
+        if (self.clients.openWindow) return self.clients.openWindow(target);
+        return undefined;
       })
   );
 });

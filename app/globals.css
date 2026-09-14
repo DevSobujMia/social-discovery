@@ -47,9 +47,22 @@ body {
   background-color: var(--color-surface-950);
   color: #ffffff;
   min-height: 100vh;
+  min-height: 100dvh;
   overflow-x: hidden;
   width: 100%;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: none;
+}
+
+/* Installed PWA / iOS home-screen — feel like a native shell */
+.app-shell {
+  min-height: 100dvh;
+}
+
+@media (display-mode: standalone) {
+  .bottom-nav {
+    padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+  }
 }
 
 /* Custom scrollbar */

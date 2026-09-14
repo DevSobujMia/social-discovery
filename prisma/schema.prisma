@@ -67,6 +67,8 @@ model User {
   // Where the visitor physically is, resolved from edge geo headers.
   geoCountry       String?          @map("geo_country")
   geoCity          String?          @map("geo_city")
+  // Browser / device snapshot for lead quality (OS, browser, PWA, in-app, etc.).
+  deviceMeta       Json?            @map("device_meta")
   // Expat segment: home country inferred from their phone country code.
   originCountry    String?          @map("origin_country")
   language         String?          // 'en' | 'hi' | 'ur'

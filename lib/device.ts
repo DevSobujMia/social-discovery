@@ -155,3 +155,132 @@ export function inferVisitorAge(params: AdParams): number | null {
   }
   return params.minAge || params.maxAge || null;
 }
+
+// ============================================================
+// DEVICE SNAPSHOT (lead quality for admin)
+// ============================================================
+
+export type DeviceSnapshot = {
+  collectedAt: string;
+  userAgent: string;
+  platform: string;
+  os: string;
+  browser: string;
+  deviceClass: 'phone' | 'tablet' | 'desktop' | 'unknown';
+  isMobile: boolean;
+  isStandalone: boolean;
+  isInAppBrowser: boolean;
+  inAppBrowser: string | null;
+  language: string;
+  languages: string[];
+  timezone: string;
+  screen: string;
+  viewport: string;
+  pixelRatio: number;
+  touchPoints: number;
+  connection: string | null;
+  cookiesEnabled: boolean;
+};
+
+function detectOs(ua: string, platform: string): string {
+  if (/Android/i.test(ua)) {
+    const m = ua.match(/Android\s+([\d.]+)/i);
+    return m ? `Android ${m[1]}` : 'Android';
+  }
+  if (/iPhone|iPad|iPod/i.test(ua)) {
+    const m = ua.match(/OS\s+([\d_]+)/i);
+    return m ? `iOS ${m[1].replace(/_/g, '.')}` : 'iOS';
+  }
+  if (/Windows NT/i.test(ua)) return 'Windows';
+  if (/Mac OS X/i.test(ua) || platform === 'MacIntel') return 'macOS';
+  if (/Linux/i.test(ua)) return 'Linux';
+  return platform || 'Unknown';
+}
+
+function detectBrowser(ua: string): { browser: string; inApp: string | null } {
+  if (/Instagram/i.test(ua)) return { browser: 'Instagram', inApp: 'instagram' };
+  if (/FBAN|FBAV|FB_IAB|Facebook/i.test(ua)) return { browser: 'Facebook', inApp: 'facebook' };
+  if (/Line\//i.test(ua)) return { browser: 'LINE', inApp: 'line' };
+  if (/TikTok|Bytedance|musical_ly/i.test(ua)) return { browser: 'TikTok', inApp: 'tiktok' };
+  if (/Snapchat/i.test(ua)) return { browser: 'Snapchat', inApp: 'snapchat' };
+  if (/WhatsApp/i.test(ua)) return { browser: 'WhatsApp', inApp: 'whatsapp' };
+  if (/Edg\//i.test(ua)) return { browser: 'Edge', inApp: null };
+  if (/OPR\/|Opera/i.test(ua)) return { browser: 'Opera', inApp: null };
+  if (/SamsungBrowser/i.test(ua)) return { browser: 'Samsung Internet', inApp: null };
+  if (/Chrome\//i.test(ua) && !/Edg\//i.test(ua)) return { browser: 'Chrome', inApp: null };
+  if (/Safari\//i.test(ua) && !/Chrome\//i.test(ua)) return { browser: 'Safari', inApp: null };
+  if (/Firefox\//i.test(ua)) return { browser: 'Firefox', inApp: null };
+  return { browser: 'Other', inApp: null };
+}
+
+function detectDeviceClass(ua: string, touchPoints: number): DeviceSnapshot['deviceClass'] {
+  if (/iPad|Tablet|Android(?!.*Mobile)/i.test(ua)) return 'tablet';
+  if (/Mobi|iPhone|Android.*Mobile/i.test(ua)) return 'phone';
+  if (touchPoints > 0 && /Macintosh/i.test(ua)) return 'tablet'; // iPadOS desktop UA
+  if (/Windows|Macintosh|Linux/i.test(ua)) return 'desktop';
+  return touchPoints > 1 ? 'phone' : 'unknown';
+}
+
+function readConnection(): string | null {
+  try {
+    const conn = (
+      navigator as Navigator & {
+        connection?: { effectiveType?: string; type?: string; saveData?: boolean };
+      }
+    ).connection;
+    if (!conn) return null;
+    const parts = [conn.effectiveType || conn.type].filter(Boolean);
+    if (conn.saveData) parts.push('save-data');
+    return parts.length ? parts.join(' · ') : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Capture a lightweight browser/device snapshot for lead-quality review.
+ * Safe to call only in the browser; returns null when window is unavailable.
+ */
+export function collectDeviceSnapshot(): DeviceSnapshot | null {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return null;
+
+  try {
+    const ua = navigator.userAgent || '';
+    const platform = navigator.platform || '';
+    const { browser, inApp } = detectBrowser(ua);
+    const touchPoints = navigator.maxTouchPoints || 0;
+    const deviceClass = detectDeviceClass(ua, touchPoints);
+    const iosStandalone = (
+      navigator as Navigator & { standalone?: boolean }
+    ).standalone;
+    const isStandalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      iosStandalone === true;
+
+    return {
+      collectedAt: new Date().toISOString(),
+      userAgent: ua.slice(0, 512),
+      platform,
+      os: detectOs(ua, platform),
+      browser,
+      deviceClass,
+      isMobile: deviceClass === 'phone' || deviceClass === 'tablet',
+      isStandalone,
+      isInAppBrowser: Boolean(inApp),
+      inAppBrowser: inApp,
+      language: navigator.language || '',
+      languages: Array.isArray(navigator.languages)
+        ? navigator.languages.slice(0, 5).map(String)
+        : [],
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+      screen: `${window.screen?.width || 0}×${window.screen?.height || 0}`,
+      viewport: `${window.innerWidth}×${window.innerHeight}`,
+      pixelRatio: Number(window.devicePixelRatio?.toFixed?.(2) ?? window.devicePixelRatio) || 1,
+      touchPoints,
+      connection: readConnection(),
+      cookiesEnabled: navigator.cookieEnabled !== false,
+    };
+  } catch {
+    return null;
+  }
+}

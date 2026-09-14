@@ -1,18 +1,25 @@
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
-import { requireUser } from '@/lib/auth';
+import { getCurrentUser, getCurrentStaff } from '@/lib/auth';
 import { success, error, handleApiError } from '@/lib/api-helpers';
 import { writeFile, mkdir } from 'fs/promises';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 
 const UPLOAD_DIR = process.env.UPLOAD_PATH || './uploads';
-const MAX_FILE_SIZE = parseInt(process.env.MAX_FILE_SIZE_MB || '5') * 1024 * 1024;
+const MAX_FILE_SIZE = parseInt(process.env.MAX_FILE_SIZE_MB || '15') * 1024 * 1024;
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 
 export async function POST(req: NextRequest) {
   try {
-    const currentUser = await requireUser();
+    const [currentUser, currentStaff] = await Promise.all([
+      getCurrentUser(),
+      getCurrentStaff(),
+    ]);
+
+    if (!currentUser && !currentStaff) {
+      return error('Please sign in to upload photos', 401);
+    }
 
     const formData = await req.formData();
     const file = formData.get('file') as File | null;
@@ -42,13 +49,31 @@ export async function POST(req: NextRequest) {
     const buffer = Buffer.from(await file.arrayBuffer());
     await writeFile(filePath, buffer);
 
+    const publicUrl = `/api/uploads/profiles/${filename}`;
+
+    // Staff uploading a curated travel profile photo (before user row is created)
+    if (!currentUser) {
+      return success(
+        {
+          id: filename,
+          url: publicUrl,
+          filePath: publicUrl,
+          isPrimary: true,
+        },
+        201
+      );
+    }
+
     // Ensure user has a profile
     let profileId = currentUser.profile?.id;
     if (!profileId) {
       const createdProfile = await prisma.profile.create({
         data: {
           userId: currentUser.id,
-          displayName: currentUser.profile?.displayName || currentUser.email?.split('@')[0] || 'Traveler',
+          displayName:
+            currentUser.profile?.displayName ||
+            currentUser.email?.split('@')[0] ||
+            'Traveler',
         },
       });
       profileId = createdProfile.id;

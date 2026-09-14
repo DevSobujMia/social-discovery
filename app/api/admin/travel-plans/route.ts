@@ -59,7 +59,9 @@ export async function GET(req: NextRequest) {
         profileId: plan.profileId,
         profileName: plan.profile.displayName,
         profileUserId: plan.profile.userId,
-        photo: plan.profile.photos[0]?.filePath || null,
+        photo: plan.photoUrl || plan.profile.photos[0]?.filePath || null,
+        photoUrl: plan.photoUrl,
+        timing: plan.timing,
         city: plan.city,
         country: plan.country,
         fromDate: plan.fromDate,
@@ -78,7 +80,7 @@ export async function POST(req: NextRequest) {
   try {
     const staff = await requireStaff();
     const body = await req.json();
-    const { profileId, city, country, fromDate, toDate, note } = body;
+    const { profileId, city, country, timing, fromDate, toDate, note, photoUrl } = body;
 
     if (!profileId) return error('A profile is required');
 
@@ -89,11 +91,25 @@ export async function POST(req: NextRequest) {
       return error('A destination country is required');
     }
 
-    const from = parseDate(fromDate);
-    const to = parseDate(toDate);
-    if (!from) return error('A valid arrival date is required');
-    if (!to) return error('A valid departure date is required');
-    if (to < from) return error('The departure date cannot be before arrival');
+    let from: Date | null = parseDate(fromDate);
+    let to: Date | null = parseDate(toDate);
+    const now = new Date();
+
+    if (timing === 'coming_soon' || timing === 'soon' || (!from && !to && timing !== 'custom')) {
+      from = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
+      to = new Date(now.getTime() + 10 * 24 * 60 * 60 * 1000);
+    } else if (timing === 'next_month') {
+      const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      from = nextMonth;
+      to = new Date(now.getFullYear(), now.getMonth() + 1, 15);
+    } else if (timing === 'flexible') {
+      from = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+      to = new Date(now.getTime() + 45 * 24 * 60 * 60 * 1000);
+    } else {
+      if (!from) return error('A valid arrival date is required');
+      if (!to) return error('A valid departure date is required');
+      if (to < from) return error('The departure date cannot be before arrival');
+    }
 
     const profile = await prisma.profile.findUnique({
       where: { id: profileId },
@@ -109,6 +125,8 @@ export async function POST(req: NextRequest) {
         fromDate: from,
         toDate: to,
         note: note && String(note).trim() ? String(note).trim() : null,
+        photoUrl: photoUrl && String(photoUrl).trim() ? String(photoUrl).trim() : null,
+        timing: timing || 'soon',
       },
     });
 
@@ -119,7 +137,7 @@ export async function POST(req: NextRequest) {
           action: 'travel_plan.create',
           targetType: 'travel_plan',
           targetId: plan.id,
-          details: { profileId, city: cleanCity, country: country.trim() },
+          details: { profileId, city: cleanCity, country: country.trim(), photoUrl: plan.photoUrl, timing: plan.timing },
         },
       })
       .catch(() => {
@@ -137,7 +155,7 @@ export async function PATCH(req: NextRequest) {
   try {
     const staff = await requireStaff();
     const body = await req.json();
-    const { id, city, country, fromDate, toDate, note, isActive } = body;
+    const { id, city, country, timing, fromDate, toDate, note, photoUrl, isActive } = body;
 
     if (!id) return error('A travel plan ID is required');
 
@@ -156,6 +174,12 @@ export async function PATCH(req: NextRequest) {
         return error('A destination country is required');
       }
       data.country = String(country).trim();
+    }
+    if (timing !== undefined) {
+      data.timing = timing;
+    }
+    if (photoUrl !== undefined) {
+      data.photoUrl = photoUrl && String(photoUrl).trim() ? String(photoUrl).trim() : null;
     }
     if (fromDate !== undefined) {
       const from = parseDate(fromDate);

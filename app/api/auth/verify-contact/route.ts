@@ -8,6 +8,7 @@ import {
   refreshLead,
   type IdentityKind,
 } from '@/lib/leads';
+import { mergeDeviceMeta } from '@/lib/device-meta';
 import { inferCountryFromPhone, inferLanguage } from '@/lib/market';
 
 /** Channels a visitor can hand over without any third-party credentials. */
@@ -25,7 +26,7 @@ export async function POST(req: NextRequest) {
   try {
     const currentUser = await requireUser();
     const body = await req.json();
-    const { method, value } = body;
+    const { method, value, device } = body;
 
     if (!method || !ALLOWED_METHODS.includes(method)) {
       return error(
@@ -99,6 +100,8 @@ export async function POST(req: NextRequest) {
       updateData.originCountry = originCountry;
       updateData.language = inferLanguage(originCountry);
     }
+    const mergedDevice = mergeDeviceMeta(currentUser.deviceMeta, device);
+    if (mergedDevice) updateData.deviceMeta = mergedDevice;
 
     let updatedUser;
     try {

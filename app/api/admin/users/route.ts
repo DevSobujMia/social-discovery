@@ -4,6 +4,7 @@ import { requireStaff, hashPassword } from '@/lib/auth';
 import { success, error, handleApiError } from '@/lib/api-helpers';
 import { summarizeIdentities } from '@/lib/leads';
 import { messagingCostTier } from '@/lib/market';
+import { summarizeDeviceMeta } from '@/lib/device-meta';
 
 // GET /api/admin/users — list all users
 export async function GET(req: NextRequest) {
@@ -60,7 +61,19 @@ export async function GET(req: NextRequest) {
             include: { agent: { select: { displayName: true, email: true } } },
           },
           utmAttribution: {
-            select: { utmSource: true, utmCampaign: true, utmContent: true },
+            select: {
+              utmSource: true,
+              utmCampaign: true,
+              utmContent: true,
+              userAgent: true,
+            },
+          },
+          customerRequirements: {
+            select: {
+              preferredGender: true,
+              relationshipIntention: true,
+              travelDestination: true,
+            },
           },
           identities: {
             select: { kind: true, value: true, label: true, verifiedAt: true },
@@ -113,6 +126,18 @@ export async function GET(req: NextRequest) {
         language: u.language,
         messagingCost: messagingCostTier(u.originCountry || u.geoCountry),
         identities: summarizeIdentities(u.identities),
+        requirements: u.customerRequirements
+          ? {
+              preferredGender: u.customerRequirements.preferredGender,
+              relationshipIntention: u.customerRequirements.relationshipIntention,
+              travelDestination: u.customerRequirements.travelDestination,
+            }
+          : null,
+        device: summarizeDeviceMeta(u.deviceMeta, {
+          country: u.geoCountry,
+          city: u.geoCity,
+        }),
+        deviceMeta: u.deviceMeta,
       })),
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     });
@@ -127,12 +152,19 @@ export async function POST(req: NextRequest) {
     const staff = await requireStaff();
     const body = await req.json();
     const {
-      email, password, displayName, gender, country, city, bio,
+      email, password, displayName, age, gender, country, city, bio,
       interests, lookingFor, relationshipIntention, dateOfBirth,
       photoUrl, travelCity, travelCountry, travelNote, travelFromDate, travelToDate,
     } = body;
 
     if (!displayName) return error('Display name is required');
+
+    const parsedAge = age ? parseInt(String(age), 10) : undefined;
+    let dob = dateOfBirth ? new Date(dateOfBirth) : undefined;
+    if (!dob && parsedAge && !isNaN(parsedAge)) {
+      const now = new Date();
+      dob = new Date(now.getFullYear() - parsedAge, 5, 15);
+    }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const userData: any = {
@@ -140,6 +172,7 @@ export async function POST(req: NextRequest) {
       createdByStaffId: staff.id,
       signupStage: 'active',
       status: 'active',
+      age: parsedAge && !isNaN(parsedAge) ? parsedAge : undefined,
     };
 
     if (email) {
@@ -177,10 +210,10 @@ export async function POST(req: NextRequest) {
             interests: interestList,
             lookingFor: lookingFor || 'travel_partner',
             relationshipIntention: relationshipIntention || undefined,
-            dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
+            dateOfBirth: dob,
             isVerified: true,
             isVisible: true,
-            profileCompleteness: photoUrl ? 85 : 70,
+            profileCompleteness: photoUrl ? 90 : 75,
             ...(photoUrl
               ? {
                   photos: {

@@ -52,6 +52,7 @@ import {
   TravelUrgencyBadge,
 } from './components/TravelBadge';
 import {
+  collectDeviceSnapshot,
   getDeviceToken,
   inferVisitorAge,
   loadAdParams,
@@ -169,13 +170,8 @@ interface PendingIntent {
 }
 
 export default function AppHome() {
-  // Navigation & View state
-  const [activeTab, setActiveTab] = useState<'discover' | 'messenger' | 'profile'>(() => {
-    if (typeof window !== 'undefined' && localStorage.getItem('heartlink_has_chatted') === 'true') {
-      return 'messenger';
-    }
-    return 'discover';
-  });
+  // Navigation & View state (always default to discover / Find page for incoming visitors)
+  const [activeTab, setActiveTab] = useState<'discover' | 'messenger' | 'profile'>('discover');
   const initialChatOpenedRef = useRef(false);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [loadingUser, setLoadingUser] = useState(true);
@@ -291,6 +287,8 @@ export default function AppHome() {
 
   const currentUserRef = useRef(currentUser);
   currentUserRef.current = currentUser;
+  /** Stop inbox/message polls after a 401 until the user signs in again. */
+  const authDeadRef = useRef(false);
 
   // Block management state
   const [blockedUserIds, setBlockedUserIds] = useState<string[]>([]);
@@ -544,12 +542,29 @@ export default function AppHome() {
   }, []);
 
   // Fetch authenticated user
+  const clearGuestSession = useCallback(() => {
+    authDeadRef.current = true;
+    setCurrentUser(null);
+    currentUserRef.current = null;
+    setActiveChat(null);
+    setConversations([]);
+    setMessages([]);
+    // Drop the orphan JWT so polls cannot keep 401-spamming after a DB reset.
+    fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ scope: 'user' }),
+    }).catch(() => {});
+  }, []);
+
   const fetchCurrentUser = useCallback(async () => {
     try {
       setLoadingUser(true);
       const res = await fetch('/api/auth/me', { credentials: 'include', cache: 'no-store' });
       const data = await res.json();
       if (data.success && data.data?.user) {
+        authDeadRef.current = false;
         setCurrentUser(data.data.user);
         currentUserRef.current = data.data.user;
         if (Array.isArray(data.data.user.profile?.travelPlans)) {
@@ -561,11 +576,17 @@ export default function AppHome() {
         setEditInterests(data.data.user.profile?.interests?.join(', ') || '');
         return data.data.user;
       } else {
+        // Soft clear — do not call logout here (me already drops orphan cookies).
+        authDeadRef.current = true;
         setCurrentUser(null);
         currentUserRef.current = null;
+        setActiveChat(null);
+        setConversations([]);
+        setMessages([]);
         return null;
       }
     } catch {
+      authDeadRef.current = true;
       setCurrentUser(null);
       currentUserRef.current = null;
       return null;
@@ -592,7 +613,10 @@ export default function AppHome() {
         const res = await fetch('/api/auth/device-resume', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ deviceToken: token }),
+          body: JSON.stringify({
+            deviceToken: token,
+            device: collectDeviceSnapshot(),
+          }),
         });
         const data = await res.json();
         if (cancelled || !data.success || !data.data?.resumed) return;
@@ -693,9 +717,17 @@ export default function AppHome() {
   );
 
   const fetchConversations = useCallback(async (silent = false) => {
+    if (authDeadRef.current || !currentUserRef.current) return [];
     try {
       if (!silent) setLoadingConversations(true);
-      const res = await fetch('/api/conversations');
+      const res = await fetch('/api/conversations', {
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      if (res.status === 401) {
+        clearGuestSession();
+        return [];
+      }
       const data = await res.json();
       if (data.success && Array.isArray(data.data?.conversations)) {
         const list: ConversationItem[] = data.data.conversations;
@@ -710,22 +742,15 @@ export default function AppHome() {
         );
         setConversations(normalized);
 
-        // Auto-open inbox and active conversation on return if user previously chatted
+        // Returning visitor routing: ONLY auto-open messenger if there are unread messages waiting.
+        // Otherwise, stay on the discover (Find) page as the default.
         if (normalized.length > 0 && !initialChatOpenedRef.current) {
-          const hasChatted =
-            (typeof window !== 'undefined' && localStorage.getItem('heartlink_has_chatted') === 'true') ||
-            normalized.some((c) => (c.participant.unreadCount || 0) > 0);
-
-          if (hasChatted) {
+          const unreadConv = normalized.find((c) => (c.participant.unreadCount || 0) > 0);
+          if (unreadConv) {
             initialChatOpenedRef.current = true;
             setActiveTab('messenger');
-            const lastId = typeof window !== 'undefined' ? localStorage.getItem('heartlink_last_conv_id') : null;
-            const target =
-              (lastId ? normalized.find((c) => c.id === lastId) : null) ||
-              normalized.find((c) => (c.participant.unreadCount || 0) > 0) ||
-              normalized[0];
-            if (target && !activeChatRef.current) {
-              handleSelectChat(target);
+            if (!activeChatRef.current) {
+              handleSelectChat(unreadConv);
             }
           }
         }
@@ -739,29 +764,23 @@ export default function AppHome() {
     } finally {
       if (!silent) setLoadingConversations(false);
     }
-  }, [sortConversations]);
+  }, [sortConversations, clearGuestSession]);
 
-  useEffect(() => {
-    if (activeTab === 'messenger') {
-      fetchConversations();
-    }
-  }, [activeTab, fetchConversations]);
-
-  // Live inbox: badges + latest-first order without manual refresh
-  useEffect(() => {
-    if (!currentUser) return;
-    const interval = setInterval(() => {
-      fetchConversations(true);
-    }, 800);
-    return () => clearInterval(interval);
-  }, [currentUser, fetchConversations]);
+  const fetchConversationsRef = useRef(fetchConversations);
+  fetchConversationsRef.current = fetchConversations;
 
   // Fetch messages for active chat
   const fetchMessages = useCallback(async (conversationId: string) => {
+    if (authDeadRef.current || !currentUserRef.current) return;
     try {
       const res = await fetch(`/api/conversations/${conversationId}/messages`, {
+        credentials: 'include',
         cache: 'no-store',
       });
+      if (res.status === 401) {
+        clearGuestSession();
+        return;
+      }
       const data = await res.json();
       if (activeChatRef.current?.id !== conversationId) return;
       if (data.success && Array.isArray(data.data?.messages)) {
@@ -813,18 +832,75 @@ export default function AppHome() {
     } catch (err) {
       console.error('Failed to fetch messages:', err);
     }
+  }, [clearGuestSession]);
+
+  const fetchMessagesRef = useRef(fetchMessages);
+  fetchMessagesRef.current = fetchMessages;
+
+  // One-shot load when opening Messenger (not a poll).
+  useEffect(() => {
+    if (activeTab === 'messenger' && currentUser && !authDeadRef.current) {
+      fetchConversationsRef.current();
+    }
+  }, [activeTab, currentUser]);
+
+  // Single inbox poll loop — empty deps so Fast Refresh cannot stack intervals.
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      if (stopped) return;
+      if (
+        !authDeadRef.current &&
+        currentUserRef.current &&
+        !(typeof document !== 'undefined' && document.hidden)
+      ) {
+        await fetchConversationsRef.current(true);
+      }
+      if (!stopped) timer = setTimeout(tick, 3000);
+    };
+
+    timer = setTimeout(tick, 3000);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
+  // Single message poll loop for the open chat.
   useEffect(() => {
-    if (activeChat) {
-      messagesFpRef.current = '';
-      fetchMessages(activeChat.id);
-      const interval = setInterval(() => {
-        fetchMessages(activeChat.id);
-      }, 700);
-      return () => clearInterval(interval);
-    }
-  }, [activeChat, fetchMessages]);
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      if (stopped) return;
+      const chatId = activeChatRef.current?.id;
+      if (
+        chatId &&
+        !authDeadRef.current &&
+        currentUserRef.current &&
+        !(typeof document !== 'undefined' && document.hidden)
+      ) {
+        await fetchMessagesRef.current(chatId);
+      }
+      if (!stopped) timer = setTimeout(tick, 2500);
+    };
+
+    // Immediate fetch when activeChat changes is handled below.
+    timer = setTimeout(tick, 2500);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  // When the open chat changes, fetch once immediately.
+  useEffect(() => {
+    if (!activeChat || !currentUser || authDeadRef.current) return;
+    messagesFpRef.current = '';
+    fetchMessagesRef.current(activeChat.id);
+  }, [activeChat, currentUser]);
 
   useEffect(() => {
     if (!stickToBottomRef.current) return;
@@ -982,7 +1058,8 @@ export default function AppHome() {
     profile: FunnelMatch,
     visitorName: string,
     opener?: string,
-    visitorLocation?: string
+    visitorLocation?: string,
+    prefs?: { lookingForGender: 'female' | 'male' }
   ) => {
     let storedUtm: any = null;
     try {
@@ -993,18 +1070,49 @@ export default function AppHome() {
     }
 
     const ageGuess = adParams ? inferVisitorAge(adParams) : null;
+    const lookingForGender =
+      prefs?.lookingForGender ||
+      (adParams?.gender === 'male' || adParams?.gender === 'female'
+        ? adParams.gender
+        : 'female');
+    // Soft inference for CRM only — men usually look for women and vice versa.
+    const visitorGender = lookingForGender === 'female' ? 'male' : 'female';
+
+    const savedGuestName =
+      typeof window !== 'undefined'
+        ? localStorage.getItem('heartlink_guest_name')
+        : null;
+
+    const finalVisitorName =
+      visitorName &&
+      visitorName !== 'Visitor' &&
+      visitorName !== 'Guest Traveler'
+        ? visitorName
+        : currentUser?.profile?.displayName &&
+          currentUser.profile.displayName !== 'Visitor' &&
+          currentUser.profile.displayName !== 'Guest Traveler'
+        ? currentUser.profile.displayName
+        : savedGuestName &&
+          savedGuestName !== 'Visitor' &&
+          savedGuestName !== 'Guest Traveler'
+        ? savedGuestName
+        : 'Visitor';
+
+    const hasName = Boolean(finalVisitorName && finalVisitorName !== 'Visitor');
 
     const res = await fetch('/api/auth/guest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        name: visitorName,
+        name: finalVisitorName,
         age: ageGuess || 28,
-        gender: 'male',
+        gender: visitorGender,
         lookingFor: 'travel_partner',
+        preferredGender: lookingForGender,
         targetUserId: profile.userId,
         utm: storedUtm,
         deviceToken: getDeviceToken(),
+        device: collectDeviceSnapshot(),
         adCity: visitorLocation || adParams?.city || undefined,
         adCountry: adParams?.country || undefined,
       }),
@@ -1040,12 +1148,6 @@ export default function AppHome() {
       handleSwitchTab('messenger');
       handleSelectChat(convItem);
 
-      const hasName = Boolean(
-        visitorName &&
-        visitorName !== 'Visitor' &&
-        visitorName !== 'Guest Traveler'
-      );
-
       if (hasName) {
         const firstLine = opener?.trim();
         if (firstLine) {
@@ -1064,6 +1166,10 @@ export default function AppHome() {
               bumpConversation(data.data.conversationId, firstLine);
               setFirstMessageSent(true);
               triggerPeerTyping(profile.displayName);
+              try {
+                localStorage.setItem('heartlink_has_chatted', 'true');
+                localStorage.setItem('heartlink_last_conv_id', data.data.conversationId);
+              } catch {}
             }
           } catch {
             setChatInput(firstLine);
@@ -1091,6 +1197,22 @@ export default function AppHome() {
 
     setSubmittingInlineName(true);
     try {
+      try {
+        localStorage.setItem('heartlink_guest_name', cleanName);
+      } catch {}
+
+      setCurrentUser((prev: any) =>
+        prev
+          ? {
+              ...prev,
+              profile: {
+                ...(prev.profile || {}),
+                displayName: cleanName,
+              },
+            }
+          : prev
+      );
+
       const res = await fetch('/api/profiles', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -1168,6 +1290,7 @@ export default function AppHome() {
           utm: storedUtm,
           // Binds this browser to the lead so a cleared cookie is recoverable.
           deviceToken: getDeviceToken(),
+          device: collectDeviceSnapshot(),
           adCity: adParams?.city || undefined,
           adCountry: adParams?.country || undefined,
         }),
@@ -1225,6 +1348,7 @@ export default function AppHome() {
         body: JSON.stringify({
           method: verificationMethod,
           value: verificationValue.trim(),
+          device: collectDeviceSnapshot(),
         }),
       });
       const data = await res.json();
@@ -1565,8 +1689,9 @@ export default function AppHome() {
     }
   };
 
-  // Quick Demo Login (Daniel, Elena, Aisha, or Admin)
+  // Quick Demo Login (Daniel, Elena, Aisha) — development only
   const handleQuickLogin = async (email: string) => {
+    if (process.env.NODE_ENV === 'production') return;
     setAuthSubmitting(true);
     try {
       const res = await fetch('/api/auth/login', {
@@ -1682,9 +1807,7 @@ export default function AppHome() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scope: 'user' }),
     });
-    setCurrentUser(null);
-    setActiveChat(null);
-    setConversations([]);
+    clearGuestSession();
     fetchProfiles();
   };
 
@@ -1697,7 +1820,7 @@ export default function AppHome() {
     <div className="h-dvh flex flex-col overflow-hidden bg-surface-950 text-white font-sans selection:bg-brand-500 selection:text-white">
       {/* Top Header — hide on mobile when inside an open chat */}
       <header
-        className={`shrink-0 z-40 bg-surface-950 border-b border-surface-800 px-4 py-2.5 ${
+        className={`shrink-0 z-40 bg-surface-950 border-b border-surface-800 px-4 py-2.5 pt-[max(0.625rem,env(safe-area-inset-top))] ${
           activeTab === 'messenger' && activeChat ? 'hidden md:block' : ''
         }`}
       >
@@ -2289,7 +2412,7 @@ export default function AppHome() {
               {activeChat ? (
                 <>
                   {/* Chat Header */}
-                  <div className="px-3 py-2.5 border-b border-surface-800 bg-surface-950 flex items-center justify-between shrink-0">
+                  <div className="px-3 py-2.5 border-b border-surface-800 bg-surface-950 flex items-center justify-between shrink-0 pt-[max(0.625rem,env(safe-area-inset-top))] md:pt-2.5">
                     <div className="flex items-center gap-3 min-w-0">
                       <button
                         onClick={handleCloseChat}
@@ -2474,9 +2597,13 @@ export default function AppHome() {
                       )}
                     </div>
                   ) : !Boolean(
-                      currentUser?.profile?.displayName &&
-                      currentUser.profile.displayName !== 'Visitor' &&
-                      currentUser.profile.displayName !== 'Guest Traveler'
+                      (currentUser?.profile?.displayName &&
+                        currentUser.profile.displayName !== 'Visitor' &&
+                        currentUser.profile.displayName !== 'Guest Traveler') ||
+                      (typeof window !== 'undefined' &&
+                        localStorage.getItem('heartlink_guest_name') &&
+                        localStorage.getItem('heartlink_guest_name') !== 'Visitor' &&
+                        localStorage.getItem('heartlink_guest_name') !== 'Guest Traveler')
                     ) ? (
                     /* Inline Name Prompt inside chat for new visitors */
                     <div className="p-3 sm:p-4 border-t border-brand-500/30 bg-gradient-to-b from-surface-900 via-surface-900/98 to-surface-950 sticky bottom-0 z-20 shadow-2xl backdrop-blur-xl">
@@ -2533,7 +2660,7 @@ export default function AppHome() {
                   ) : (
                     <form
                       onSubmit={(e) => handleSendMessage(e)}
-                      className="p-2 sm:p-3 border-t border-surface-800/80 bg-surface-900/95 flex items-end gap-1.5 sm:gap-2 sticky bottom-0 z-20"
+                      className="p-2 sm:p-3 border-t border-surface-800/80 bg-surface-900/95 flex items-end gap-1.5 sm:gap-2 sticky bottom-0 z-20 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
                     >
                       {/* Hidden File Input for Photos and Videos */}
                       <input
@@ -3326,11 +3453,11 @@ export default function AppHome() {
               </button>
             </div>
 
-            {/* Quick Demo Switcher */}
-            {authMode !== 'contact_login' && (
+            {/* Quick Demo Switcher — never ship in production builds */}
+            {process.env.NODE_ENV !== 'production' && authMode !== 'contact_login' && (
               <div className="bg-surface-800/60 p-2.5 rounded-xl mb-3.5 border border-surface-700/50">
                 <p className="text-[10px] font-semibold text-surface-400 uppercase tracking-wider mb-1.5 flex items-center gap-1">
-                  <span>⚡ Instant Test Persona Login (1-Click):</span>
+                  <span>Instant Test Persona Login (1-Click):</span>
                 </p>
                 <div className="grid grid-cols-3 gap-1.5">
                   <button

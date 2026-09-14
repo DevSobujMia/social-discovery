@@ -35,8 +35,22 @@ import {
   Plane,
   Camera,
   CheckCheck,
-  Sparkles
+  Sparkles,
+  Upload,
+  Trash2,
+  MapPin,
+  Calendar,
+  Image as ImageIcon,
+  Smartphone,
+  Monitor,
+  Tablet,
 } from 'lucide-react';
+import {
+  COUNTRY_CITIES,
+  POPULAR_COUNTRIES,
+  DESTINATION_PHOTOS,
+  TIMING_OPTIONS,
+} from '@/components/PostTravelPlanModal';
 import {
   chatBubbleTime,
   chatListTime,
@@ -104,20 +118,29 @@ export default function AdminDashboardPage() {
   const [userStatusFilter, setUserStatusFilter] = useState('');
   const [leadStageFilter, setLeadStageFilter] = useState<'' | 'complete' | 'incomplete'>('');
   const [copiedContact, setCopiedContact] = useState<string | null>(null);
+  const [expandedDeviceLeadId, setExpandedDeviceLeadId] = useState<string | null>(null);
 
   const [travelPlans, setTravelPlans] = useState<any[]>([]);
   const [curatedProfiles, setCuratedProfiles] = useState<any[]>([]);
   const [tripForm, setTripForm] = useState({
     profileId: '',
-    city: 'Dubai',
     country: 'United Arab Emirates',
+    city: 'Dubai',
+    customCountry: '',
+    customCity: '',
+    timing: 'coming_soon',
     fromDate: '',
     toDate: '',
-    note: '',
+    note: 'Traveling soon · looking for local company',
+    photoUrl: DESTINATION_PHOTOS['Dubai'] || '',
   });
+  const [uploadingTripPhoto, setUploadingTripPhoto] = useState(false);
+  const tripPhotoFileRef = useRef<HTMLInputElement>(null);
+  const [deletingTripId, setDeletingTripId] = useState<string | null>(null);
   const [savingTrip, setSavingTrip] = useState(false);
   const [profileForm, setProfileForm] = useState({
     displayName: '',
+    age: '24',
     gender: 'female',
     country: 'United Kingdom',
     city: 'London',
@@ -128,6 +151,8 @@ export default function AdminDashboardPage() {
     travelNote: 'Traveling soon to Dubai.',
   });
   const [savingProfile, setSavingProfile] = useState(false);
+  const [uploadingProfilePhoto, setUploadingProfilePhoto] = useState(false);
+  const profilePhotoFileRef = useRef<HTMLInputElement>(null);
 
   // Master Inbox
   const [conversations, setConversations] = useState<any[]>([]);
@@ -144,6 +169,12 @@ export default function AdminDashboardPage() {
   const [uploadingAdminMedia, setUploadingAdminMedia] = useState(false);
   const selectedChatRef = useRef(selectedChat);
   selectedChatRef.current = selectedChat;
+
+  const currentStaffRef = useRef(currentStaff);
+  currentStaffRef.current = currentStaff;
+
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
 
   // Campaigns
   const [campaigns, setCampaigns] = useState<any[]>([]);
@@ -289,6 +320,37 @@ export default function AdminDashboardPage() {
     }
   };
 
+  const handleUploadProfilePhotoFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadingProfilePhoto(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('type', 'curated_profile');
+
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await res.json();
+      if (data.success && (data.data?.url || data.data?.filePath)) {
+        const url = data.data.url || data.data.filePath;
+        setProfileForm((prev) => ({ ...prev, photoUrl: url }));
+        showToast('Photo uploaded successfully');
+      } else {
+        showToast(data.error?.message || 'Could not upload photo');
+      }
+    } catch {
+      showToast('Could not upload photo');
+    } finally {
+      setUploadingProfilePhoto(false);
+      if (profilePhotoFileRef.current) profilePhotoFileRef.current.value = '';
+    }
+  };
+
   const handleCreateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!profileForm.displayName.trim()) {
@@ -302,6 +364,7 @@ export default function AdminDashboardPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           displayName: profileForm.displayName.trim(),
+          age: profileForm.age ? parseInt(String(profileForm.age), 10) : undefined,
           gender: profileForm.gender,
           country: profileForm.country,
           city: profileForm.city,
@@ -318,6 +381,7 @@ export default function AdminDashboardPage() {
         showToast(`Created ${profileForm.displayName} · traveling soon to ${profileForm.travelCity}`);
         setProfileForm({
           displayName: '',
+          age: '24',
           gender: 'female',
           country: 'United Kingdom',
           city: 'London',
@@ -338,23 +402,102 @@ export default function AdminDashboardPage() {
     }
   };
 
+  const handleCountryChangeForTrip = (newCountry: string) => {
+    const firstCity =
+      newCountry !== 'Other' && COUNTRY_CITIES[newCountry]?.length > 0
+        ? COUNTRY_CITIES[newCountry][0]
+        : 'Other';
+    setTripForm((prev) => ({
+      ...prev,
+      country: newCountry,
+      city: firstCity,
+      photoUrl: DESTINATION_PHOTOS[firstCity] || prev.photoUrl,
+    }));
+  };
+
+  const handleCityChangeForTrip = (newCity: string) => {
+    setTripForm((prev) => ({
+      ...prev,
+      city: newCity,
+      photoUrl: DESTINATION_PHOTOS[newCity] || prev.photoUrl,
+    }));
+  };
+
+  const handleUploadTripPhotoFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingTripPhoto(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await fetch('/api/upload', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.success && data.data?.url) {
+        setTripForm((prev) => ({ ...prev, photoUrl: data.data.url }));
+        showToast('Trip photo uploaded! 📷');
+      } else {
+        showToast(data.error?.message || 'Could not upload photo');
+      }
+    } catch {
+      showToast('Could not upload photo');
+    } finally {
+      setUploadingTripPhoto(false);
+      if (tripPhotoFileRef.current) tripPhotoFileRef.current.value = '';
+    }
+  };
+
   const handleCreateTrip = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!tripForm.profileId || !tripForm.fromDate || !tripForm.toDate) {
-      showToast('Pick a profile and both dates');
+    if (!tripForm.profileId) {
+      showToast('Please select a curated profile');
       return;
     }
+
+    const effectiveCountry = tripForm.country === 'Other' ? tripForm.customCountry.trim() : tripForm.country;
+    const effectiveCity = tripForm.city === 'Other' ? tripForm.customCity.trim() : tripForm.city;
+
+    if (!effectiveCountry || !effectiveCity) {
+      showToast('Please specify both destination country and city');
+      return;
+    }
+
+    if (tripForm.timing === 'custom') {
+      if (!tripForm.fromDate || !tripForm.toDate) {
+        showToast('Pick both arrival and departure dates for custom timing');
+        return;
+      }
+      if (new Date(tripForm.fromDate) > new Date(tripForm.toDate)) {
+        showToast('Departure date cannot be before arrival date');
+        return;
+      }
+    }
+
     setSavingTrip(true);
     try {
       const res = await fetch('/api/admin/travel-plans', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(tripForm),
+        body: JSON.stringify({
+          profileId: tripForm.profileId,
+          country: effectiveCountry,
+          city: effectiveCity,
+          timing: tripForm.timing,
+          fromDate: tripForm.timing === 'custom' ? tripForm.fromDate : undefined,
+          toDate: tripForm.timing === 'custom' ? tripForm.toDate : undefined,
+          note: tripForm.note.trim() || undefined,
+          photoUrl: tripForm.photoUrl.trim() || undefined,
+        }),
       });
       const data = await res.json();
       if (data.success) {
-        showToast('Trip added — ads to that city will match her');
-        setTripForm((prev) => ({ ...prev, fromDate: '', toDate: '', note: '' }));
+        showToast(`Trip to ${effectiveCity} added! Visitors in ${effectiveCity} will match her ✈`);
+        setTripForm((prev) => ({
+          ...prev,
+          fromDate: '',
+          toDate: '',
+          note: 'Traveling soon · looking for local company',
+          photoUrl: DESTINATION_PHOTOS[effectiveCity] || '',
+        }));
         fetchTravelPlans();
       } else {
         showToast(data.error?.message || 'Could not save trip');
@@ -366,9 +509,30 @@ export default function AdminDashboardPage() {
     }
   };
 
-  const fetchMasterInbox = async () => {
+  const handleDeleteTrip = async (id: string) => {
+    setDeletingTripId(id);
     try {
-      const res = await fetch('/api/admin/conversations');
+      const res = await fetch(`/api/admin/travel-plans?id=${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        showToast('Trip plan removed');
+        setTravelPlans((prev) => prev.filter((p) => p.id !== id));
+      } else {
+        showToast(data.error?.message || 'Could not remove trip');
+      }
+    } catch {
+      showToast('Could not remove trip');
+    } finally {
+      setDeletingTripId(null);
+    }
+  };
+
+  const fetchMasterInbox = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/conversations', {
+        credentials: 'include',
+        cache: 'no-store',
+      });
       const data = await res.json();
       if (data.success) {
         const list = data.data?.conversations || (Array.isArray(data.data) ? data.data : []);
@@ -385,7 +549,34 @@ export default function AdminDashboardPage() {
     } catch (e) {
       console.error(e);
     }
-  };
+  }, []);
+
+  const fetchMasterInboxRef = useRef(fetchMasterInbox);
+  fetchMasterInboxRef.current = fetchMasterInbox;
+
+  const fetchChatMessages = useCallback(async (id: string, isSilent = false) => {
+    try {
+      const res = await fetch(`/api/admin/conversations/${id}/messages`, {
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      const data = await res.json();
+      if (selectedChatRef.current?.id !== id) return;
+      if (data.success && Array.isArray(data.data?.messages)) {
+        setChatMessages(data.data.messages);
+        if (!isSilent) {
+          setTimeout(() => {
+            chatMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+          }, 60);
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
+  const fetchChatMessagesRef = useRef(fetchChatMessages);
+  fetchChatMessagesRef.current = fetchChatMessages;
 
   const handleMarkAllRead = async () => {
     try {
@@ -572,39 +763,56 @@ export default function AdminDashboardPage() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Fetch messages for selected conversation in Master Inbox
-  const fetchChatMessages = async (id: string, isSilent = false) => {
-    try {
-      const res = await fetch(`/api/admin/conversations/${id}/messages`);
-      const data = await res.json();
-      if (data.success && Array.isArray(data.data?.messages)) {
-        setChatMessages(data.data.messages);
-        if (!isSilent) {
-          setTimeout(() => {
-            chatMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-          }, 60);
-        }
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
+  // Fetch once when opening a thread; live updates come from the stable poll below.
   useEffect(() => {
-    if (selectedChat) {
-      fetchChatMessages(selectedChat.id);
-      const interval = setInterval(() => fetchChatMessages(selectedChat.id, true), 700);
-      return () => clearInterval(interval);
-    }
+    if (!selectedChat) return;
+    fetchChatMessagesRef.current(selectedChat.id);
   }, [selectedChat]);
 
-  // Live inbox list so new customer messages show a red badge without refresh
+  // Single message poll — empty deps so Fast Refresh cannot stack timers.
   useEffect(() => {
-    if (activeTab !== 'inbox') return;
-    fetchMasterInbox();
-    const interval = setInterval(fetchMasterInbox, 1200);
-    return () => clearInterval(interval);
-  }, [activeTab]);
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      if (stopped) return;
+      const chatId = selectedChatRef.current?.id;
+      if (chatId && !(typeof document !== 'undefined' && document.hidden)) {
+        await fetchChatMessagesRef.current(chatId, true);
+      }
+      if (!stopped) timer = setTimeout(tick, 2500);
+    };
+
+    timer = setTimeout(tick, 2500);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  // Live inbox list — only while staff is on the Inbox tab.
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      if (stopped) return;
+      if (
+        currentStaffRef.current &&
+        activeTabRef.current === 'inbox' &&
+        !(typeof document !== 'undefined' && document.hidden)
+      ) {
+        await fetchMasterInboxRef.current();
+      }
+      if (!stopped) timer = setTimeout(tick, 3000);
+    };
+
+    timer = setTimeout(tick, 3000);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
 
   // Send staff reply with instant optimistic UI (text, photo, or video)
   const handleSendStaffReply = async (
@@ -1244,6 +1452,7 @@ export default function AdminDashboardPage() {
                         <th className="p-3">Requirements</th>
                         <th className="p-3">Verification</th>
                         <th className="p-3">Direct Contact</th>
+                        <th className="p-3">Device</th>
                         <th className="p-3">Source</th>
                         <th className="p-3">Status</th>
                         <th className="p-3 text-right">Actions</th>
@@ -1255,8 +1464,21 @@ export default function AdminDashboardPage() {
                         const displayName = u.displayName || u.profile?.displayName || 'Anonymous Lead';
                         const country = u.country || u.profile?.country || '—';
                         const gender = u.gender || u.profile?.gender || '—';
-                        const lookingFor = u.lookingFor || u.profile?.lookingFor;
+                        const lookingFor =
+                          u.requirements?.preferredGender ||
+                          u.lookingFor ||
+                          u.profile?.lookingFor;
                         const complete = isCompleteLead(u);
+                        const device = u.device;
+                        const deviceOpen = expandedDeviceLeadId === u.id;
+                        const DeviceIcon =
+                          device?.fields?.find((f: { key: string }) => f.key === 'Device')?.value ===
+                          'desktop'
+                            ? Monitor
+                            : device?.fields?.find((f: { key: string }) => f.key === 'Device')
+                                  ?.value === 'tablet'
+                              ? Tablet
+                              : Smartphone;
                         const channels = ([
                           { channel: 'phone' as const, value: u.phone, label: 'Call', Icon: Phone, tone: 'text-sky-300 border-sky-500/30 hover:bg-sky-500/10' },
                           { channel: 'whatsapp' as const, value: u.whatsapp, label: 'WhatsApp', Icon: MessageCircle, tone: 'text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/10' },
@@ -1264,7 +1486,8 @@ export default function AdminDashboardPage() {
                         ]).filter((c) => typeof c.value === 'string' && c.value.trim().length > 0);
 
                         return (
-                          <tr key={u.id} className="hover:bg-surface-800/40 transition">
+                          <React.Fragment key={u.id}>
+                          <tr className="hover:bg-surface-800/40 transition">
                             <td className="p-3">
                               <div className="flex items-center gap-2.5">
                                 <div className="w-8 h-8 rounded-full overflow-hidden bg-surface-700 shrink-0">
@@ -1295,10 +1518,15 @@ export default function AdminDashboardPage() {
 
                             <td className="p-3">
                               <span className="badge-brand text-[10px] capitalize">
-                                {typeof lookingFor === 'string' ? lookingFor.replace(/_/g, ' ') : 'Not specified'}
+                                {typeof lookingFor === 'string'
+                                  ? lookingFor.replace(/_/g, ' ')
+                                  : 'Not specified'}
                               </span>
                               <p className="text-[10px] text-surface-400 mt-1 capitalize">
                                 {gender} · {country}
+                                {u.requirements?.travelDestination
+                                  ? ` · ${u.requirements.travelDestination}`
+                                  : ''}
                               </p>
                             </td>
 
@@ -1356,6 +1584,42 @@ export default function AdminDashboardPage() {
                             </td>
 
                             <td className="p-3">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedDeviceLeadId((id) => (id === u.id ? null : u.id))
+                                }
+                                className="text-left max-w-[200px] group cursor-pointer"
+                                title={device?.qualityNote || 'Device details'}
+                              >
+                                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-white">
+                                  <DeviceIcon className="w-3.5 h-3.5 text-surface-400 group-hover:text-brand-300" />
+                                  <span className="truncate">{device?.label || 'Unknown device'}</span>
+                                </span>
+                                <p className="text-[10px] text-surface-400 mt-0.5 truncate">
+                                  {device?.detail || 'Tap for details'}
+                                </p>
+                                {device?.quality && device.quality !== 'unknown' ? (
+                                  <span
+                                    className={`mt-1 inline-flex text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                                      device.quality === 'strong'
+                                        ? 'bg-emerald-500/15 text-emerald-300'
+                                        : device.quality === 'weak'
+                                          ? 'bg-amber-500/15 text-amber-300'
+                                          : 'bg-surface-800 text-surface-400'
+                                    }`}
+                                  >
+                                    {device.quality === 'strong'
+                                      ? 'Good signal'
+                                      : device.quality === 'weak'
+                                        ? 'In-app / caution'
+                                        : 'Neutral'}
+                                  </span>
+                                ) : null}
+                              </button>
+                            </td>
+
+                            <td className="p-3">
                               {u.source?.utm_campaign ? (
                                 <>
                                   <span className="badge text-[10px] bg-brand-500/15 text-brand-300 font-medium">
@@ -1398,12 +1662,65 @@ export default function AdminDashboardPage() {
                               </div>
                             </td>
                           </tr>
+                          {deviceOpen ? (
+                            <tr className="bg-surface-950/80">
+                              <td colSpan={8} className="px-4 py-3">
+                                <div className="rounded-xl border border-surface-800 bg-surface-900/60 p-3">
+                                  <div className="flex items-start justify-between gap-3 mb-2">
+                                    <div>
+                                      <p className="text-xs font-bold text-white">Device & quality</p>
+                                      <p className="text-[11px] text-surface-400 mt-0.5">
+                                        {device?.qualityNote || 'No quality note'}
+                                      </p>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => setExpandedDeviceLeadId(null)}
+                                      className="text-[11px] text-surface-400 hover:text-white cursor-pointer"
+                                    >
+                                      Close
+                                    </button>
+                                  </div>
+                                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+                                    {(device?.fields || []).map(
+                                      (f: { key: string; value: string }) => (
+                                        <div
+                                          key={f.key}
+                                          className="rounded-lg bg-surface-950/70 border border-surface-800 px-2.5 py-2"
+                                        >
+                                          <p className="text-[9px] uppercase tracking-wide text-surface-500">
+                                            {f.key}
+                                          </p>
+                                          <p className="text-[11px] text-surface-200 mt-0.5 break-all">
+                                            {f.value}
+                                          </p>
+                                        </div>
+                                      )
+                                    )}
+                                    {(!device?.fields || device.fields.length === 0) && (
+                                      <p className="text-[11px] text-surface-500 col-span-full">
+                                        Device snapshot will appear after the visitor opens chat or returns.
+                                      </p>
+                                    )}
+                                  </div>
+                                  {u.geoCity || u.geoCountry || u.language ? (
+                                    <p className="text-[10px] text-surface-500 mt-2">
+                                      Edge geo: {[u.geoCity, u.geoCountry].filter(Boolean).join(', ') || '—'}
+                                      {u.language ? ` · lang ${u.language}` : ''}
+                                      {typeof u.leadScore === 'number' ? ` · score ${u.leadScore}` : ''}
+                                    </p>
+                                  ) : null}
+                                </div>
+                              </td>
+                            </tr>
+                          ) : null}
+                          </React.Fragment>
                         );
                       })}
 
                       {!loadingUsers && visibleLeads.length === 0 && (
                         <tr>
-                          <td colSpan={7} className="p-10 text-center">
+                          <td colSpan={8} className="p-10 text-center">
                             <UserCheck className="w-8 h-8 mx-auto text-surface-600 mb-2" />
                             <p className="text-surface-300 font-medium">No leads in this view</p>
                             <p className="text-[11px] text-surface-500 mt-1">
@@ -1906,26 +2223,41 @@ export default function AdminDashboardPage() {
                     New curated profile
                   </p>
                 </div>
-                <div>
-                  <label className="input-label">Display name</label>
-                  <input
-                    value={profileForm.displayName}
-                    onChange={(e) => setProfileForm({ ...profileForm, displayName: e.target.value })}
-                    className="input-field py-2 text-xs"
-                    placeholder="Emma"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="input-label">Gender</label>
-                  <select
-                    value={profileForm.gender}
-                    onChange={(e) => setProfileForm({ ...profileForm, gender: e.target.value })}
-                    className="input-field py-2 text-xs"
-                  >
-                    <option value="female">Female</option>
-                    <option value="male">Male</option>
-                  </select>
+                <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="input-label">Display name</label>
+                    <input
+                      value={profileForm.displayName}
+                      onChange={(e) => setProfileForm({ ...profileForm, displayName: e.target.value })}
+                      className="input-field py-2 text-xs"
+                      placeholder="Emma"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="input-label">Age</label>
+                    <input
+                      type="number"
+                      min={18}
+                      max={85}
+                      value={profileForm.age}
+                      onChange={(e) => setProfileForm({ ...profileForm, age: e.target.value })}
+                      className="input-field py-2 text-xs"
+                      placeholder="24"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="input-label">Gender</label>
+                    <select
+                      value={profileForm.gender}
+                      onChange={(e) => setProfileForm({ ...profileForm, gender: e.target.value })}
+                      className="input-field py-2 text-xs"
+                    >
+                      <option value="female">Female</option>
+                      <option value="male">Male</option>
+                    </select>
+                  </div>
                 </div>
                 <div>
                   <label className="input-label">Home country (EU / US)</label>
@@ -1954,22 +2286,80 @@ export default function AdminDashboardPage() {
                     placeholder="Traveling soon to Dubai…"
                   />
                 </div>
-                <div>
-                  <label className="input-label">Photo URL</label>
-                  <input
-                    value={profileForm.photoUrl}
-                    onChange={(e) => setProfileForm({ ...profileForm, photoUrl: e.target.value })}
-                    className="input-field py-2 text-xs"
-                    placeholder="https://…"
-                  />
+                <div className="sm:col-span-2 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="input-label mb-0">Profile photo</label>
+                    <span className="text-[11px] text-surface-400">Upload photo file or paste direct image URL</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="relative w-11 h-11 rounded-xl bg-surface-800 border border-surface-700 flex items-center justify-center shrink-0 overflow-hidden shadow-inner group">
+                      {profileForm.photoUrl ? (
+                        <>
+                          <img
+                            src={profileForm.photoUrl}
+                            alt="Preview"
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              (e.target as HTMLElement).style.display = 'none';
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setProfileForm({ ...profileForm, photoUrl: '' })}
+                            className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex items-center justify-center text-red-400 transition-opacity"
+                            title="Remove photo"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </>
+                      ) : (
+                        <Camera className="w-5 h-5 text-surface-500" />
+                      )}
+                    </div>
+                    <div className="flex-1">
+                      <input
+                        value={profileForm.photoUrl}
+                        onChange={(e) => setProfileForm({ ...profileForm, photoUrl: e.target.value })}
+                        className="input-field py-2 text-xs w-full"
+                        placeholder="Paste image URL (https://...) or click Upload ->"
+                      />
+                    </div>
+                    <div>
+                      <input
+                        ref={profilePhotoFileRef}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handleUploadProfilePhotoFile}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => profilePhotoFileRef.current?.click()}
+                        disabled={uploadingProfilePhoto}
+                        className="btn-ghost py-2 px-3 text-xs border border-surface-700 hover:border-brand-teal/60 flex items-center gap-1.5 whitespace-nowrap"
+                      >
+                        {uploadingProfilePhoto ? (
+                          <>
+                            <div className="w-3.5 h-3.5 border-2 border-brand-teal border-t-transparent rounded-full animate-spin" />
+                            <span>Uploading…</span>
+                          </>
+                        ) : (
+                          <>
+                            <Upload className="w-3.5 h-3.5 text-brand-teal" />
+                            <span>Upload photo</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <div>
+                <div className="sm:col-span-2">
                   <label className="input-label">Interests</label>
                   <input
                     value={profileForm.interests}
                     onChange={(e) => setProfileForm({ ...profileForm, interests: e.target.value })}
                     className="input-field py-2 text-xs"
-                    placeholder="Travel, Cafes"
+                    placeholder="Travel, Cafes, Photography"
                   />
                 </div>
                 <div>
@@ -2016,51 +2406,250 @@ export default function AdminDashboardPage() {
 
               <form
                 onSubmit={handleCreateTrip}
-                className="glass-card p-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs"
+                className="glass-card p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs"
               >
-                <div className="sm:col-span-2">
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-surface-500 mb-1">
-                    Add trip to existing profile
-                  </p>
+                <div className="sm:col-span-2 flex items-center justify-between border-b border-surface-800 pb-2.5">
+                  <div>
+                    <p className="text-sm font-bold text-white flex items-center gap-1.5">
+                      <span>Add Trip to Existing Profile</span>
+                      <Plane className="w-4 h-4 text-accent-teal" />
+                    </p>
+                    <p className="text-[11px] text-surface-400">
+                      Share multiple destinations per profile with customized trip photos and flexible dates
+                    </p>
+                  </div>
                 </div>
+
+                {/* 1. Profile selector */}
                 <div className="sm:col-span-2">
-                  <label className="input-label">Profile</label>
+                  <label className="input-label">Select Curated Profile *</label>
                   <select
                     value={tripForm.profileId}
                     onChange={(e) => setTripForm({ ...tripForm, profileId: e.target.value })}
                     className="input-field py-2 text-xs"
+                    required
                   >
                     <option value="">Select a curated profile</option>
                     {curatedProfiles.map((u) => (
                       <option key={u.id} value={u.profileId}>
-                        {u.displayName}
+                        {u.displayName} ({u.country || 'Europe/US'})
                       </option>
                     ))}
                   </select>
                 </div>
+
+                {/* 2. Destination Country */}
                 <div>
-                  <label className="input-label">City they visit</label>
+                  <label className="input-label flex items-center gap-1">
+                    <MapPin className="w-3.5 h-3.5 text-accent-teal" />
+                    <span>Destination Country *</span>
+                  </label>
                   <select
-                    value={tripForm.city}
-                    onChange={(e) => {
-                      const city = e.target.value;
-                      const country =
-                        city === 'Riyadh' || city === 'Jeddah'
-                          ? 'Saudi Arabia'
-                          : 'United Arab Emirates';
-                      setTripForm({ ...tripForm, city, country });
-                    }}
+                    value={tripForm.country}
+                    onChange={(e) => handleCountryChangeForTrip(e.target.value)}
                     className="input-field py-2 text-xs"
+                    required
                   >
-                    <option>Dubai</option>
-                    <option>Abu Dhabi</option>
-                    <option>Sharjah</option>
-                    <option>Riyadh</option>
-                    <option>Jeddah</option>
-                    <option>Dammam</option>
+                    {POPULAR_COUNTRIES.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                    <option value="Other">Other Country...</option>
                   </select>
+                  {tripForm.country === 'Other' && (
+                    <input
+                      type="text"
+                      value={tripForm.customCountry}
+                      onChange={(e) => setTripForm({ ...tripForm, customCountry: e.target.value })}
+                      placeholder="Enter destination country"
+                      className="input-field py-2 text-xs mt-1.5"
+                      required
+                    />
+                  )}
                 </div>
+
+                {/* 3. Destination City */}
                 <div>
+                  <label className="input-label flex items-center gap-1">
+                    <Plane className="w-3.5 h-3.5 text-accent-teal" />
+                    <span>Destination City *</span>
+                  </label>
+                  {tripForm.country !== 'Other' && COUNTRY_CITIES[tripForm.country]?.length > 0 ? (
+                    <>
+                      <select
+                        value={tripForm.city}
+                        onChange={(e) => handleCityChangeForTrip(e.target.value)}
+                        className="input-field py-2 text-xs"
+                        required
+                      >
+                        {COUNTRY_CITIES[tripForm.country].map((cityName) => (
+                          <option key={cityName} value={cityName}>
+                            {cityName}
+                          </option>
+                        ))}
+                        <option value="Other">Other City...</option>
+                      </select>
+                      {tripForm.city === 'Other' && (
+                        <input
+                          type="text"
+                          value={tripForm.customCity}
+                          onChange={(e) => setTripForm({ ...tripForm, customCity: e.target.value })}
+                          placeholder="Enter destination city"
+                          className="input-field py-2 text-xs mt-1.5"
+                          required
+                        />
+                      )}
+                    </>
+                  ) : (
+                    <input
+                      type="text"
+                      value={tripForm.customCity}
+                      onChange={(e) => setTripForm({ ...tripForm, customCity: e.target.value })}
+                      placeholder="Enter destination city"
+                      className="input-field py-2 text-xs"
+                      required
+                    />
+                  )}
+                </div>
+
+                {/* 4. Flexible Timing Options (Same as user side) */}
+                <div className="sm:col-span-2 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="input-label mb-0 flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-accent-teal" />
+                      <span>When is the trip? (Flexible Timeline)</span>
+                    </label>
+                    <span className="text-[11px] text-surface-400">Match visitors during this timeline</span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {TIMING_OPTIONS.map((opt) => (
+                      <button
+                        type="button"
+                        key={opt.id}
+                        onClick={() => setTripForm({ ...tripForm, timing: opt.id })}
+                        className={`p-2.5 rounded-xl text-left border transition text-xs flex flex-col justify-between cursor-pointer ${
+                          tripForm.timing === opt.id
+                            ? 'bg-accent-teal/20 border-accent-teal text-white shadow-sm ring-1 ring-accent-teal/40'
+                            : 'bg-surface-900 border-surface-800 text-surface-400 hover:text-surface-200 hover:border-surface-700'
+                        }`}
+                      >
+                        <span className="font-bold text-[11px] text-white block mb-0.5">{opt.label}</span>
+                        <span className="text-[10px] text-surface-400 leading-tight">{opt.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  {tripForm.timing === 'custom' && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 p-3 rounded-xl bg-surface-900/60 border border-surface-800 animate-fadeIn">
+                      <div>
+                        <label className="input-label">Arrives (Start Date)</label>
+                        <input
+                          type="date"
+                          value={tripForm.fromDate}
+                          onChange={(e) => setTripForm({ ...tripForm, fromDate: e.target.value })}
+                          className="input-field py-2 text-xs"
+                          required={tripForm.timing === 'custom'}
+                        />
+                      </div>
+                      <div>
+                        <label className="input-label">Leaves (End Date)</label>
+                        <input
+                          type="date"
+                          value={tripForm.toDate}
+                          onChange={(e) => setTripForm({ ...tripForm, toDate: e.target.value })}
+                          className="input-field py-2 text-xs"
+                          required={tripForm.timing === 'custom'}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 5. Trip Specific Cover Photo (Upload or Paste URL) */}
+                <div className="sm:col-span-2 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="input-label mb-0 flex items-center gap-1.5">
+                      <ImageIcon className="w-3.5 h-3.5 text-accent-teal" />
+                      <span>Trip Cover Photo (Unique photo for this destination)</span>
+                    </label>
+                    <span className="text-[11px] text-surface-400">Upload photo file or paste image URL</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="relative w-12 h-12 rounded-xl bg-surface-800 border border-surface-700 flex items-center justify-center shrink-0 overflow-hidden shadow-inner group">
+                      {tripForm.photoUrl ? (
+                        <>
+                          <img
+                            src={tripForm.photoUrl}
+                            alt="Trip cover"
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              (e.target as HTMLElement).style.display = 'none';
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setTripForm({ ...tripForm, photoUrl: '' })}
+                            className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex items-center justify-center text-red-400 transition-opacity"
+                            title="Remove photo"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </>
+                      ) : (
+                        <Plane className="w-5 h-5 text-surface-500" />
+                      )}
+                    </div>
+                    <div className="flex-1">
+                      <input
+                        value={tripForm.photoUrl}
+                        onChange={(e) => setTripForm({ ...tripForm, photoUrl: e.target.value })}
+                        className="input-field py-2 text-xs w-full"
+                        placeholder="Paste image URL (https://...) or click Upload photo ->"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        ref={tripPhotoFileRef}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handleUploadTripPhotoFile}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => tripPhotoFileRef.current?.click()}
+                        disabled={uploadingTripPhoto}
+                        className="btn-ghost py-2 px-3 text-xs border border-surface-700 hover:border-brand-teal/60 flex items-center gap-1.5 whitespace-nowrap"
+                      >
+                        {uploadingTripPhoto ? (
+                          <>
+                            <div className="w-3.5 h-3.5 border-2 border-brand-teal border-t-transparent rounded-full animate-spin" />
+                            <span>Uploading…</span>
+                          </>
+                        ) : (
+                          <>
+                            <Upload className="w-3.5 h-3.5 text-brand-teal" />
+                            <span>Upload photo</span>
+                          </>
+                        )}
+                      </button>
+                      {DESTINATION_PHOTOS[tripForm.city] && tripForm.photoUrl !== DESTINATION_PHOTOS[tripForm.city] && (
+                        <button
+                          type="button"
+                          onClick={() => setTripForm({ ...tripForm, photoUrl: DESTINATION_PHOTOS[tripForm.city] })}
+                          className="btn-ghost py-2 px-2.5 text-[11px] text-surface-400 hover:text-white border border-surface-700 whitespace-nowrap"
+                          title="Use landmark photo for destination"
+                        >
+                          Landmark
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 6. Note on the card */}
+                <div className="sm:col-span-2">
                   <label className="input-label">Note on the card</label>
                   <input
                     value={tripForm.note}
@@ -2069,58 +2658,80 @@ export default function AdminDashboardPage() {
                     className="input-field py-2 text-xs"
                   />
                 </div>
-                <div>
-                  <label className="input-label">Arrives (ranking only)</label>
-                  <input
-                    type="date"
-                    value={tripForm.fromDate}
-                    onChange={(e) => setTripForm({ ...tripForm, fromDate: e.target.value })}
-                    className="input-field py-2 text-xs"
-                  />
-                </div>
-                <div>
-                  <label className="input-label">Leaves (ranking only)</label>
-                  <input
-                    type="date"
-                    value={tripForm.toDate}
-                    onChange={(e) => setTripForm({ ...tripForm, toDate: e.target.value })}
-                    className="input-field py-2 text-xs"
-                  />
-                </div>
+
+                {/* Submit button */}
                 <div className="sm:col-span-2 flex justify-end">
                   <button
                     type="submit"
-                    disabled={savingTrip}
-                    className="btn-secondary py-2 px-4 text-xs font-semibold disabled:opacity-50"
+                    disabled={savingTrip || uploadingTripPhoto}
+                    className="btn-primary py-2.5 px-5 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50"
                   >
-                    {savingTrip ? 'Saving…' : 'Add trip'}
+                    {savingTrip ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Adding trip…</span>
+                      </>
+                    ) : (
+                      <>
+                        <Plane className="w-3.5 h-3.5" />
+                        <span>Share & Add trip ✈</span>
+                      </>
+                    )}
                   </button>
                 </div>
               </form>
 
               <div className="space-y-2">
+                <div className="flex items-center justify-between pt-2">
+                  <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
+                    <span>Active Travel Plans & Destinations</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-surface-800 text-surface-300 font-normal">
+                      {travelPlans.length}
+                    </span>
+                  </h3>
+                </div>
+
                 {travelPlans.length === 0 && (
-                  <p className="text-xs text-surface-400">No trips yet. Seed the database or add one above.</p>
+                  <p className="text-xs text-surface-400">No trips yet. Create a trip above to start matching visitors.</p>
                 )}
                 {travelPlans.map((plan) => (
                   <div
                     key={plan.id}
-                    className="flex items-center gap-3 p-3 rounded-xl bg-surface-900/70 border border-surface-800"
+                    className="flex items-center gap-3 p-3 rounded-xl bg-surface-900/70 border border-surface-800 hover:border-surface-700 transition"
                   >
                     {plan.photo ? (
-                      <img src={plan.photo} alt="" className="w-10 h-10 rounded-full object-cover" />
+                      <img src={plan.photo} alt="" className="w-12 h-12 rounded-xl object-cover shrink-0 border border-surface-700 shadow-sm" />
                     ) : (
-                      <div className="w-10 h-10 rounded-full bg-surface-800" />
+                      <div className="w-12 h-12 rounded-xl bg-surface-800 flex items-center justify-center shrink-0 text-surface-500">
+                        <Plane className="w-5 h-5" />
+                      </div>
                     )}
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold text-white truncate">
-                        {plan.profileName} → {plan.city}
-                      </p>
-                      <p className="text-[11px] text-surface-400">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-semibold text-white truncate">
+                          {plan.profileName} → {plan.city}{plan.country ? `, ${plan.country}` : ''}
+                        </p>
+                        {plan.timing ? (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-accent-teal/15 text-accent-teal border border-accent-teal/30 capitalize font-medium">
+                            {plan.timing.replace('_', ' ')}
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="text-[11px] text-surface-400 mt-0.5">
                         {new Date(plan.fromDate).toLocaleDateString()} – {new Date(plan.toDate).toLocaleDateString()}
-                        {plan.note ? ` · ${plan.note}` : ''}
+                        {plan.note ? ` · "${plan.note}"` : ''}
                       </p>
                     </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteTrip(plan.id)}
+                      disabled={deletingTripId === plan.id}
+                      className="p-2 rounded-lg text-surface-400 hover:text-red-400 hover:bg-red-500/10 transition cursor-pointer shrink-0"
+                      title="Delete trip plan"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   </div>
                 ))}
               </div>

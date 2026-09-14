@@ -5,6 +5,15 @@ import { cookies } from 'next/headers';
 import { prisma } from './db';
 
 const AUTH_SECRET = process.env.AUTH_SECRET || 'fallback-dev-secret';
+
+if (
+  process.env.NODE_ENV === 'production' &&
+  (!process.env.AUTH_SECRET || process.env.AUTH_SECRET === 'fallback-dev-secret')
+) {
+  throw new Error(
+    'AUTH_SECRET must be set to a strong random value in production before serving traffic.'
+  );
+}
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 
 /**

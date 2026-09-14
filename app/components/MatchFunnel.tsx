@@ -40,7 +40,7 @@ export interface MatchProfile {
 }
 
 /** Verified candidate travellers currently in their home countries planning trips */
-const SYNC_PROFILES = [
+const SYNC_PROFILES_FEMALE = [
   {
     name: 'Elena',
     age: 24,
@@ -70,6 +70,39 @@ const SYNC_PROFILES = [
     age: 24,
     homeCountry: 'Italy',
     photo: 'https://images.unsplash.com/photo-1531746020798-e6953c6e8e04?w=360&h=360&fit=crop&q=80',
+  },
+];
+
+const SYNC_PROFILES_MALE = [
+  {
+    name: 'Liam',
+    age: 29,
+    homeCountry: 'Australia',
+    photo: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=360&h=360&fit=crop&q=80',
+  },
+  {
+    name: 'Marcus',
+    age: 31,
+    homeCountry: 'Canada',
+    photo: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=360&h=360&fit=crop&q=80',
+  },
+  {
+    name: 'Daniel',
+    age: 30,
+    homeCountry: 'United States',
+    photo: 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=360&h=360&fit=crop&q=80',
+  },
+  {
+    name: 'Alexander',
+    age: 28,
+    homeCountry: 'United Kingdom',
+    photo: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?w=360&h=360&fit=crop&q=80',
+  },
+  {
+    name: 'Lucas',
+    age: 32,
+    homeCountry: 'Spain',
+    photo: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=360&h=360&fit=crop&q=80',
   },
 ];
 
@@ -113,7 +146,8 @@ export default function MatchFunnel({
     profile: MatchProfile,
     visitorName: string,
     opener?: string,
-    visitorLocation?: string
+    visitorLocation?: string,
+    prefs?: { lookingForGender: 'female' | 'male' }
   ) => Promise<void>;
   currentUser?: any | null;
 }) {
@@ -131,15 +165,34 @@ export default function MatchFunnel({
   const [error, setError] = useState('');
   const syncTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const hasRealName = Boolean(
+  const savedGuestName =
+    typeof window !== 'undefined'
+      ? localStorage.getItem('heartlink_guest_name')
+      : null;
+
+  const currentDisplayName =
     currentUser?.profile?.displayName &&
     currentUser.profile.displayName !== 'Visitor' &&
     currentUser.profile.displayName !== 'Guest Traveler'
-  );
+      ? currentUser.profile.displayName
+      : savedGuestName &&
+        savedGuestName !== 'Visitor' &&
+        savedGuestName !== 'Guest Traveler'
+      ? savedGuestName
+      : null;
 
-  // Dynamic city resolution from URL ad parameters (empty by default so it works everywhere)
-  const adParams = loadAdParams();
-  const rawCity = adParams?.city?.trim() || '';
+  const hasRealName = Boolean(currentDisplayName);
+
+  // Dynamic city resolution from URL ad parameters (hydrated on client mount to avoid SSR mismatch)
+  const [rawCity, setRawCity] = useState('');
+
+  useEffect(() => {
+    const params = loadAdParams();
+    if (params?.city?.trim()) {
+      setRawCity(params.city.trim());
+    }
+  }, []);
+
   const openers = getOpenerSuggestions(rawCity);
 
   useEffect(() => {
@@ -163,11 +216,12 @@ export default function MatchFunnel({
       gender?: string;
       withAge?: boolean;
       travellingOnly?: boolean;
+      ignoreCity?: boolean;
     }) => {
       const params = new URLSearchParams({
         limit: '30',
       });
-      if (rawCity) params.set('city', rawCity);
+      if (rawCity && !opts.ignoreCity) params.set('city', rawCity);
       if (opts.gender) params.set('gender', opts.gender);
       if (opts.travellingOnly !== false) params.set('travellingOnly', 'true');
       if (opts.withAge) {
@@ -179,10 +233,47 @@ export default function MatchFunnel({
       return (data.success ? data.data?.profiles || [] : []) as MatchProfile[];
     };
 
-    let list = await fetchOnce({ gender: lookingFor, withAge: true });
-    if (!list.length) list = await fetchOnce({ gender: lookingFor, withAge: false });
-    if (!list.length) list = await fetchOnce({ withAge: false });
-    if (!list.length) list = await fetchOnce({ travellingOnly: false, withAge: false });
+    // Strict non-negotiable gender filter: NEVER allow opposite gender in matches
+    const strictGender = (items: MatchProfile[]) =>
+      items.filter(
+        (p) =>
+          p.gender &&
+          p.gender.trim().toLowerCase() === lookingFor.trim().toLowerCase()
+      );
+
+    // Fallback order ALWAYS locking gender = lookingFor:
+    // 1. Exact gender + detected city + age range + active trip
+    let list = strictGender(
+      await fetchOnce({ gender: lookingFor, withAge: true, travellingOnly: true })
+    );
+    // 2. Exact gender + detected city + all ages + active trip
+    if (!list.length) {
+      list = strictGender(
+        await fetchOnce({ gender: lookingFor, withAge: false, travellingOnly: true })
+      );
+    }
+    // 3. Exact gender + any city/destination + all ages + active trip
+    if (!list.length) {
+      list = strictGender(
+        await fetchOnce({
+          gender: lookingFor,
+          withAge: false,
+          travellingOnly: true,
+          ignoreCity: true,
+        })
+      );
+    }
+    // 4. Exact gender + any city/destination + all profiles of this gender
+    if (!list.length) {
+      list = strictGender(
+        await fetchOnce({
+          gender: lookingFor,
+          travellingOnly: false,
+          withAge: false,
+          ignoreCity: true,
+        })
+      );
+    }
 
     setPool(list);
     return list;
@@ -190,8 +281,14 @@ export default function MatchFunnel({
 
   const pickMatch = (list: MatchProfile[], exclude: string[]) => {
     if (!list.length) return null;
-    const available = list.filter((p) => !exclude.includes(p.userId));
-    const source = available.length > 0 ? available : list;
+    const strictlyGendered = list.filter(
+      (p) =>
+        p.gender &&
+        p.gender.trim().toLowerCase() === lookingFor.trim().toLowerCase()
+    );
+    if (!strictlyGendered.length) return null;
+    const available = strictlyGendered.filter((p) => !exclude.includes(p.userId));
+    const source = available.length > 0 ? available : strictlyGendered;
     return source[Math.floor(Math.random() * source.length)];
   };
 
@@ -212,10 +309,13 @@ export default function MatchFunnel({
       }
     }
 
-    // Smooth profile sync animation: cycling candidates
+    const syncCandidates =
+      lookingFor === 'male' ? SYNC_PROFILES_MALE : SYNC_PROFILES_FEMALE;
+
+    // Smooth profile sync animation: cycling candidates of the chosen gender
     if (syncTimer.current) clearInterval(syncTimer.current);
     syncTimer.current = setInterval(() => {
-      setSyncIndex((i) => (i + 1) % SYNC_PROFILES.length);
+      setSyncIndex((i) => (i + 1) % syncCandidates.length);
     }, 180);
 
     // Live sync animation duration ~2 seconds
@@ -273,9 +373,10 @@ export default function MatchFunnel({
     try {
       await onSayHi(
         match,
-        hasRealName ? currentUser.profile.displayName : 'Visitor',
+        currentDisplayName || 'Visitor',
         opener || undefined,
-        rawCity || undefined
+        rawCity || undefined,
+        { lookingForGender: lookingFor }
       );
       trackPixel('Contact', { content_name: match.displayName });
       setPendingOpener(null);
@@ -290,7 +391,9 @@ export default function MatchFunnel({
   // 1. LIVE PROFILE SYNC & MATCH ANIMATION (Profiles in their home countries syncing)
   // -------------------------------------------------------------
   if (phase === 'spinning') {
-    const currentSync = SYNC_PROFILES[syncIndex];
+    const syncCandidates =
+      lookingFor === 'male' ? SYNC_PROFILES_MALE : SYNC_PROFILES_FEMALE;
+    const currentSync = syncCandidates[syncIndex % syncCandidates.length];
 
     return (
       <div className="max-w-md mx-auto px-4 py-16 flex flex-col items-center justify-center min-h-[500px]">
@@ -308,17 +411,29 @@ export default function MatchFunnel({
 
           {/* Orbiting Profile 1 */}
           <div className="absolute top-0 left-6 w-12 h-12 rounded-full overflow-hidden ring-2 ring-brand-400/80 shadow-lg animate-float">
-            <img src={SYNC_PROFILES[(syncIndex + 1) % SYNC_PROFILES.length].photo} alt="" className="w-full h-full object-cover" />
+            <img
+              src={syncCandidates[(syncIndex + 1) % syncCandidates.length].photo}
+              alt=""
+              className="w-full h-full object-cover"
+            />
           </div>
 
           {/* Orbiting Profile 2 */}
           <div className="absolute bottom-2 right-4 w-12 h-12 rounded-full overflow-hidden ring-2 ring-accent-violet/80 shadow-lg animate-float-reverse">
-            <img src={SYNC_PROFILES[(syncIndex + 2) % SYNC_PROFILES.length].photo} alt="" className="w-full h-full object-cover" />
+            <img
+              src={syncCandidates[(syncIndex + 2) % syncCandidates.length].photo}
+              alt=""
+              className="w-full h-full object-cover"
+            />
           </div>
 
           {/* Orbiting Profile 3 */}
           <div className="absolute top-1/2 -left-3 -translate-y-1/2 w-10 h-10 rounded-full overflow-hidden ring-2 ring-pink-400/80 shadow-lg animate-float [animation-delay:1s]">
-            <img src={SYNC_PROFILES[(syncIndex + 3) % SYNC_PROFILES.length].photo} alt="" className="w-full h-full object-cover" />
+            <img
+              src={syncCandidates[(syncIndex + 3) % syncCandidates.length].photo}
+              alt=""
+              className="w-full h-full object-cover"
+            />
           </div>
 
           {/* Center Main Syncing Avatar */}
@@ -517,7 +632,7 @@ export default function MatchFunnel({
 
       {/* 2. Hero Headline — Telegram/iOS Crisp Clean Typography */}
       <div className="text-center mb-6 space-y-1.5">
-        <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+        <h1 suppressHydrationWarning className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
           {rawCity ? `Travellers Visiting ${rawCity}` : 'Meet Travel Partners'}
         </h1>
         <p className="text-xs text-surface-400 max-w-xs mx-auto leading-relaxed">

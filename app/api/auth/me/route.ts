@@ -1,4 +1,4 @@
-import { getCurrentUser, getCurrentStaff } from '@/lib/auth';
+import { getCurrentUser, getCurrentStaff, getAuthToken, removeAuthCookie } from '@/lib/auth';
 import { success, handleApiError } from '@/lib/api-helpers';
 
 /**
@@ -11,7 +11,16 @@ import { success, handleApiError } from '@/lib/api-helpers';
  */
 export async function GET() {
   try {
-    const [user, staff] = await Promise.all([getCurrentUser(), getCurrentStaff()]);
+    const token = await getAuthToken();
+    const user = await getCurrentUser();
+
+    // After a DB wipe/reseed the JWT can still be in the browser while the
+    // user row is gone. Drop the orphan cookie so the client stops 401-polling.
+    if (token && !user) {
+      await removeAuthCookie();
+    }
+
+    const staff = await getCurrentStaff();
 
     const userPayload = user
       ? {

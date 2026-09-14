@@ -1,12 +1,13 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import {
   GUEST_SESSION_DAYS,
   getCurrentUser,
-  setAuthCookie,
+  attachUserCookie,
   signToken,
 } from '@/lib/auth';
 import { error, handleApiError, success } from '@/lib/api-helpers';
+import { mergeDeviceMeta } from '@/lib/device-meta';
 import {
   findUserIdByIdentity,
   normalizeIdentityValue,
@@ -27,7 +28,7 @@ import {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { deviceToken } = body;
+    const { deviceToken, device } = body;
 
     if (!deviceToken || typeof deviceToken !== 'string') {
       return error('A device token is required.', 400);
@@ -41,6 +42,15 @@ export async function POST(req: NextRequest) {
     // Already signed in on this browser — nothing to restore.
     const existingSession = await getCurrentUser();
     if (existingSession) {
+      const merged = mergeDeviceMeta(existingSession.deviceMeta, device);
+      if (merged) {
+        await prisma.user
+          .update({
+            where: { id: existingSession.id },
+            data: { deviceMeta: merged, lastActiveAt: new Date() },
+          })
+          .catch(() => {});
+      }
       const lead = await refreshLead(existingSession.id);
       return success({
         resumed: false,
@@ -56,7 +66,7 @@ export async function POST(req: NextRequest) {
 
     const userId = await findUserIdByIdentity('device', value);
     if (!userId) {
-      return error('No previous session found for this device.', 404);
+      return success({ resumed: false });
     }
 
     const user = await prisma.user.findUnique({
@@ -65,18 +75,24 @@ export async function POST(req: NextRequest) {
     });
 
     if (!user || user.status !== 'active') {
-      return error('No previous session found for this device.', 404);
+      return success({ resumed: false });
     }
 
     const token = signToken(
       { id: user.id, email: user.email || '', type: 'user' },
       GUEST_SESSION_DAYS
     );
-    await setAuthCookie(token, GUEST_SESSION_DAYS);
 
     await touchIdentity('device', value);
+    const merged = mergeDeviceMeta(user.deviceMeta, device);
     await prisma.user
-      .update({ where: { id: user.id }, data: { lastActiveAt: new Date() } })
+      .update({
+        where: { id: user.id },
+        data: {
+          lastActiveAt: new Date(),
+          ...(merged ? { deviceMeta: merged } : {}),
+        },
+      })
       .catch(() => {
         // Non-critical bookkeeping.
       });
@@ -91,21 +107,28 @@ export async function POST(req: NextRequest) {
 
     const lead = await refreshLead(user.id);
 
-    return success({
-      resumed: true,
-      user: {
-        id: user.id,
-        displayName: user.profile?.displayName || 'Visitor',
-        age: user.age,
-        isVerifiedLead: user.isVerifiedLead,
-        leadStage: lead.stage,
-        leadScore: lead.score,
-        verifiedVia: user.verifiedVia,
-      },
-      unread: waiting
-        ? { conversationId: waiting.conversationId, count: waiting.unreadCount }
-        : null,
-    });
+    return attachUserCookie(
+      NextResponse.json({
+        success: true,
+        data: {
+          resumed: true,
+          user: {
+            id: user.id,
+            displayName: user.profile?.displayName || 'Visitor',
+            age: user.age,
+            isVerifiedLead: user.isVerifiedLead,
+            leadStage: lead.stage,
+            leadScore: lead.score,
+            verifiedVia: user.verifiedVia,
+          },
+          unread: waiting
+            ? { conversationId: waiting.conversationId, count: waiting.unreadCount }
+            : null,
+        },
+      }),
+      token,
+      GUEST_SESSION_DAYS
+    );
   } catch (err) {
     return handleApiError(err);
   }

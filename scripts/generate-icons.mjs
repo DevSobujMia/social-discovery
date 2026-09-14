@@ -2,7 +2,7 @@ import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
 
-const publicDir = 'C:\\Dev\\social-discovery\\public';
+const publicDir = path.join(process.cwd(), 'public');
 
 const svg = `
 <svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">

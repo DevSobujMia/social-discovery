@@ -75,8 +75,11 @@ export default function InstallPrompt({
   const [showIOSGuide, setShowIOSGuide] = useState(false);
 
   useEffect(() => {
+    // SW is registered globally via RegisterSW; keep a soft fallback here
+    // for older bundles that only mount InstallPrompt.
     if (typeof window === 'undefined') return;
     if (!('serviceWorker' in navigator)) return;
+    if (navigator.serviceWorker.controller) return;
 
     navigator.serviceWorker.register('/sw.js').catch(() => {
       // An unavailable service worker only costs us installability.

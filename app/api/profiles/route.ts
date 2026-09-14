@@ -31,6 +31,8 @@ interface TripView {
   daysUntil: number;
   /** Days remaining in town. Null until they arrive. */
   daysLeft: number | null;
+  photoUrl: string | null;
+  timing: string | null;
 }
 
 function describeTrip(
@@ -41,6 +43,8 @@ function describeTrip(
     fromDate: Date;
     toDate: Date;
     note: string | null;
+    photoUrl?: string | null;
+    timing?: string | null;
   },
   now: Date
 ): TripView {
@@ -63,6 +67,8 @@ function describeTrip(
     fromDate: from,
     toDate: to,
     note: plan.note,
+    photoUrl: plan.photoUrl || null,
+    timing: plan.timing || null,
     status,
     daysUntil: hereNow ? 0 : daysUntil,
     daysLeft: hereNow ? Math.max(0, Math.ceil((to.getTime() - now.getTime()) / DAY_MS)) : null,
@@ -307,7 +313,7 @@ export async function GET(req: NextRequest) {
       hideContactNumber: Boolean(p.user?.hideContactNumber),
       contact: p.user?.hideContactNumber ? null : (p.user?.whatsapp || p.user?.phone || (p.user?.telegram ? `@${p.user.telegram}` : null)),
       profileOwnerType: p.user?.profileOwnerType || 'self',
-      photo: p.photos[0]?.filePath || null,
+      photo: nextTrip?.photoUrl || p.photos[0]?.filePath || null,
       lastActive: p.user?.lastActiveAt,
       travel: nextTrip
         ? {
@@ -316,6 +322,8 @@ export async function GET(req: NextRequest) {
             fromDate: nextTrip.fromDate,
             toDate: nextTrip.toDate,
             note: nextTrip.note,
+            photoUrl: nextTrip.photoUrl,
+            timing: nextTrip.timing,
             status: nextTrip.status,
             daysUntil: nextTrip.daysUntil,
             daysLeft: nextTrip.daysLeft,
@@ -330,6 +338,8 @@ export async function GET(req: NextRequest) {
         country: t.country,
         fromDate: t.fromDate,
         toDate: t.toDate,
+        photoUrl: t.photoUrl,
+        timing: t.timing,
         status: t.status,
       })),
       matchReason: matchReason(nextTrip, p.displayName, viewerCity),
