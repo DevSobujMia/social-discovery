@@ -1,0 +1,46 @@
+{
+  "timestamp": "2026-09-15T21:53:24.657Z",
+  "pagesAudited": [
+    {
+      "pageName": "home_discover",
+      "pagePath": "/",
+      "status": 200,
+      "title": "City Host — Meet travellers visiting your city"
+    },
+    {
+      "pageName": "admin_dashboard",
+      "pagePath": "/admin",
+      "status": 200,
+      "title": "City Host — Meet travellers visiting your city"
+    },
+    {
+      "pageName": "simulator_page",
+      "pagePath": "/simulator",
+      "status": 200,
+      "title": "City Host — Meet travellers visiting your city"
+    },
+    {
+      "pageName": "legal_privacy",
+      "pagePath": "/legal/privacy",
+      "status": 200,
+      "title": "City Host — Meet travellers visiting your city"
+    },
+    {
+      "pageName": "legal_terms",
+      "pagePath": "/legal/terms",
+      "status": 200,
+      "title": "City Host — Meet travellers visiting your city"
+    }
+  ],
+  "consoleErrors": [],
+  "pageCrashes": [],
+  "networkFailures": [],
+  "warnings": [],
+  "passedChecks": [
+    "home_discover loaded and rendered successfully",
+    "admin_dashboard loaded and rendered successfully",
+    "simulator_page loaded and rendered successfully",
+    "legal_privacy loaded and rendered successfully",
+    "legal_terms loaded and rendered successfully"
+  ]
+}

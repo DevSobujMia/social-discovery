@@ -22,6 +22,23 @@ let dbServer = null;
 let nextChild = null;
 let shuttingDown = false;
 
+function readDatabaseUrl() {
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+  try {
+    const envFile = fs.readFileSync(path.join(root, '.env'), 'utf8');
+    const match = envFile.match(/^DATABASE_URL=(.*)$/m);
+    if (!match) return '';
+    return match[1].trim().replace(/^["']|["']$/g, '');
+  } catch {
+    return '';
+  }
+}
+
+function usesLocalPglite(url) {
+  if (!url) return true;
+  return /localhost|127\.0\.0\.1/i.test(url);
+}
+
 function run(command, args, label) {
   return new Promise((resolve, reject) => {
     console.log(`\n→ ${label}`);
@@ -76,7 +93,7 @@ async function main() {
   });
 
   console.log('');
-  console.log('  Heartlink starting...');
+  console.log('  City Host starting...');
   console.log('  (database + website — one command)');
   console.log('');
 
@@ -89,14 +106,21 @@ async function main() {
     }
   }
 
-  try {
-    dbServer = await startPGliteServer();
-  } catch (err) {
-    console.error('\nDatabase failed to start:', err?.message || err);
-    console.error('\nOne-time fix, then run again:');
-    console.error('  rmdir /s /q .pgdata');
-    console.error('  npm run dev\n');
-    process.exit(1);
+  const databaseUrl = readDatabaseUrl();
+  const localDb = usesLocalPglite(databaseUrl);
+
+  if (localDb) {
+    try {
+      dbServer = await startPGliteServer();
+    } catch (err) {
+      console.error('\nDatabase failed to start:', err?.message || err);
+      console.error('\nOne-time fix, then run again:');
+      console.error('  rmdir /s /q .pgdata');
+      console.error('  npm run dev\n');
+      process.exit(1);
+    }
+  } else {
+    console.log(`\n→ Using hosted Postgres (${databaseUrl.replace(/:[^:@/]+@/, ':****@')})`);
   }
 
   try {

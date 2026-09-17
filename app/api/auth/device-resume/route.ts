@@ -27,8 +27,13 @@ import {
  */
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const { deviceToken, device } = body;
+    let body: any = null;
+    try {
+      body = await req.json();
+    } catch {
+      return error('A valid JSON body is required.', 400);
+    }
+    const { deviceToken, device } = body || {};
 
     if (!deviceToken || typeof deviceToken !== 'string') {
       return error('A device token is required.', 400);

@@ -43,6 +43,7 @@ enum LookingFor {
   life_partner
   friendship
   travel_partner
+  local_guide
   other
 }
 

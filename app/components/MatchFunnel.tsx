@@ -12,8 +12,9 @@ import {
   ShieldCheck,
   Sparkles,
   X,
-  Flame,
   CheckCircle2,
+  Clock,
+  Flame,
 } from 'lucide-react';
 import InstallPrompt from './InstallPrompt';
 import { getDeviceToken, loadAdParams } from '@/lib/device';
@@ -113,6 +114,22 @@ const SOCIAL_PROOF_AVATARS = [
   'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=80&h=80&fit=crop&q=60',
 ];
 
+function countryFlag(country?: string | null): string {
+  if (!country) return '✈️';
+  const lower = country.toLowerCase();
+  if (lower.includes('czech')) return '🇨🇿';
+  if (lower.includes('spain')) return '🇪🇸';
+  if (lower.includes('france')) return '🇫🇷';
+  if (lower.includes('united kingdom') || lower.includes('uk') || lower.includes('england')) return '🇬🇧';
+  if (lower.includes('italy')) return '🇮🇹';
+  if (lower.includes('russia')) return '🇷🇺';
+  if (lower.includes('germany')) return '🇩🇪';
+  if (lower.includes('united states') || lower.includes('usa')) return '🇺🇸';
+  if (lower.includes('canada')) return '🇨🇦';
+  if (lower.includes('australia')) return '🇦🇺';
+  return '✈️';
+}
+
 function photoOf(p: MatchProfile): string {
   return (
     p.photo ||
@@ -138,6 +155,13 @@ function getOpenerSuggestions(city?: string): string[] {
   ];
 }
 
+const DAILY_SEARCH_LIMIT = 3;
+
+interface DailySearchData {
+  count: number;
+  resetAt: number;
+}
+
 export default function MatchFunnel({
   onSayHi,
   currentUser,
@@ -158,17 +182,69 @@ export default function MatchFunnel({
   const [syncIndex, setSyncIndex] = useState(0);
   const [match, setMatch] = useState<MatchProfile | null>(null);
   const [pool, setPool] = useState<MatchProfile[]>([]);
+  /** Profiles already shown this session for the current lookingFor gender. */
   const [usedIds, setUsedIds] = useState<string[]>([]);
+  const usedIdsRef = useRef<string[]>([]);
+  usedIdsRef.current = usedIds;
 
   const [pendingOpener, setPendingOpener] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const syncTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Hydrate after mount — reading localStorage during render breaks SSR/client match.
+  const [savedGuestName, setSavedGuestName] = useState<string | null>(null);
+  // Dynamic city resolution from URL ad parameters (hydrated on client mount to avoid SSR mismatch)
+  const [rawCity, setRawCity] = useState('');
 
-  const savedGuestName =
-    typeof window !== 'undefined'
-      ? localStorage.getItem('heartlink_guest_name')
-      : null;
+  // Daily search limit state & saved matched history
+  const [searchData, setSearchData] = useState<DailySearchData>({
+    count: 0,
+    resetAt: Date.now() + 24 * 60 * 60 * 1000,
+  });
+  const [matchedHistory, setMatchedHistory] = useState<MatchProfile[]>([]);
+
+  // Initialize search limit and matched history from localStorage on client mount
+  useEffect(() => {
+    try {
+      const searchRaw = localStorage.getItem('cityhost_daily_searches');
+      if (searchRaw) {
+        const parsed = JSON.parse(searchRaw) as DailySearchData;
+        if (parsed && typeof parsed.count === 'number' && typeof parsed.resetAt === 'number') {
+          if (Date.now() < parsed.resetAt) {
+            setSearchData(parsed);
+          } else {
+            // Expired — reset count
+            const fresh: DailySearchData = { count: 0, resetAt: Date.now() + 24 * 60 * 60 * 1000 };
+            setSearchData(fresh);
+            localStorage.setItem('cityhost_daily_searches', JSON.stringify(fresh));
+          }
+        }
+      }
+
+      const histRaw = localStorage.getItem('cityhost_matched_history');
+      if (histRaw) {
+        const parsedHist = JSON.parse(histRaw);
+        if (Array.isArray(parsedHist)) {
+          setMatchedHistory(parsedHist);
+        }
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      setSavedGuestName(localStorage.getItem('heartlink_guest_name'));
+    } catch {
+      setSavedGuestName(null);
+    }
+  }, [currentUser?.profile?.displayName]);
+
+  useEffect(() => {
+    const params = loadAdParams();
+    if (params?.city?.trim()) {
+      setRawCity(params.city.trim());
+    }
+  }, []);
 
   const currentDisplayName =
     currentUser?.profile?.displayName &&
@@ -180,18 +256,6 @@ export default function MatchFunnel({
         savedGuestName !== 'Guest Traveler'
       ? savedGuestName
       : null;
-
-  const hasRealName = Boolean(currentDisplayName);
-
-  // Dynamic city resolution from URL ad parameters (hydrated on client mount to avoid SSR mismatch)
-  const [rawCity, setRawCity] = useState('');
-
-  useEffect(() => {
-    const params = loadAdParams();
-    if (params?.city?.trim()) {
-      setRawCity(params.city.trim());
-    }
-  }, []);
 
   const openers = getOpenerSuggestions(rawCity);
 
@@ -217,9 +281,10 @@ export default function MatchFunnel({
       withAge?: boolean;
       travellingOnly?: boolean;
       ignoreCity?: boolean;
+      limit?: number;
     }) => {
       const params = new URLSearchParams({
-        limit: '30',
+        limit: String(opts.limit ?? 50),
       });
       if (rawCity && !opts.ignoreCity) params.set('city', rawCity);
       if (opts.gender) params.set('gender', opts.gender);
@@ -228,7 +293,7 @@ export default function MatchFunnel({
         params.set('minAge', String(min));
         params.set('maxAge', String(max));
       }
-      const res = await fetch(`/api/profiles?${params}`);
+      const res = await fetch(`/api/profiles?${params}`, { cache: 'no-store' });
       const data = await res.json();
       return (data.success ? data.data?.profiles || [] : []) as MatchProfile[];
     };
@@ -241,55 +306,103 @@ export default function MatchFunnel({
           p.gender.trim().toLowerCase() === lookingFor.trim().toLowerCase()
       );
 
-    // Fallback order ALWAYS locking gender = lookingFor:
-    // 1. Exact gender + detected city + age range + active trip
-    let list = strictGender(
+    // Merge tiers (best first). Exact matches stay at the front; near-matches
+    // fill the rotation pool so Find never goes blank and never reuses early.
+    const seen = new Set<string>();
+    const merged: MatchProfile[] = [];
+    const pushUnique = (items: MatchProfile[]) => {
+      for (const p of strictGender(items)) {
+        if (!p.userId || seen.has(p.userId)) continue;
+        seen.add(p.userId);
+        merged.push(p);
+      }
+    };
+
+    // 1. Exact gender + city + age + active trip
+    pushUnique(
       await fetchOnce({ gender: lookingFor, withAge: true, travellingOnly: true })
     );
-    // 2. Exact gender + detected city + all ages + active trip
-    if (!list.length) {
-      list = strictGender(
-        await fetchOnce({ gender: lookingFor, withAge: false, travellingOnly: true })
-      );
-    }
-    // 3. Exact gender + any city/destination + all ages + active trip
-    if (!list.length) {
-      list = strictGender(
-        await fetchOnce({
-          gender: lookingFor,
-          withAge: false,
-          travellingOnly: true,
-          ignoreCity: true,
-        })
-      );
-    }
-    // 4. Exact gender + any city/destination + all profiles of this gender
-    if (!list.length) {
-      list = strictGender(
-        await fetchOnce({
-          gender: lookingFor,
-          travellingOnly: false,
-          withAge: false,
-          ignoreCity: true,
-        })
-      );
-    }
+    // 2. Exact gender + city + any age + active trip
+    pushUnique(
+      await fetchOnce({ gender: lookingFor, withAge: false, travellingOnly: true })
+    );
+    // 3. Exact gender + any destination + active trip
+    pushUnique(
+      await fetchOnce({
+        gender: lookingFor,
+        withAge: false,
+        travellingOnly: true,
+        ignoreCity: true,
+      })
+    );
+    // 4. Exact gender + any profile (near-match safety net — never blank)
+    pushUnique(
+      await fetchOnce({
+        gender: lookingFor,
+        travellingOnly: false,
+        withAge: false,
+        ignoreCity: true,
+      })
+    );
 
-    setPool(list);
-    return list;
+    setPool(merged);
+    return merged;
   }, [lookingFor, ageMin, ageMax, rawCity]);
 
+  // Switching gender starts a fresh no-repeat cycle and preloads pool.
+  useEffect(() => {
+    setUsedIds([]);
+    usedIdsRef.current = [];
+    setPool([]);
+    setMatch(null);
+    setPhase((p) => (p === 'match' || p === 'spinning' ? 'home' : p));
+    loadPool().catch(() => {});
+  }, [lookingFor, loadPool]);
+
+  // Listen for global pull-to-refresh event
+  useEffect(() => {
+    const handleRefresh = () => {
+      loadPool().catch(() => {});
+    };
+    window.addEventListener('cityhost:refresh-pool', handleRefresh);
+    return () => window.removeEventListener('cityhost:refresh-pool', handleRefresh);
+  }, [loadPool]);
+
+  /**
+   * No repeats until every profile in the pool was shown once.
+   * Prefer higher-ranked unused profiles with light shuffle.
+   */
   const pickMatch = (list: MatchProfile[], exclude: string[]) => {
-    if (!list.length) return null;
     const strictlyGendered = list.filter(
       (p) =>
+        p.userId &&
         p.gender &&
         p.gender.trim().toLowerCase() === lookingFor.trim().toLowerCase()
     );
-    if (!strictlyGendered.length) return null;
-    const available = strictlyGendered.filter((p) => !exclude.includes(p.userId));
-    const source = available.length > 0 ? available : strictlyGendered;
-    return source[Math.floor(Math.random() * source.length)];
+    if (!strictlyGendered.length) return { chosen: null as MatchProfile | null, resetUsed: false };
+
+    let available = strictlyGendered.filter((p) => !exclude.includes(p.userId));
+    let resetUsed = false;
+    if (!available.length) {
+      available = strictlyGendered;
+      resetUsed = true;
+    }
+
+    const windowSize = Math.min(available.length, Math.max(3, Math.ceil(available.length * 0.4)));
+    const window = available.slice(0, windowSize);
+    const chosen = window[Math.floor(Math.random() * window.length)] || available[0];
+    return { chosen, resetUsed };
+  };
+
+  const saveToMatchedHistory = (profile: MatchProfile) => {
+    setMatchedHistory((prev) => {
+      const filtered = prev.filter((p) => p.userId !== profile.userId);
+      const updated = [profile, ...filtered].slice(0, 10);
+      try {
+        localStorage.setItem('cityhost_matched_history', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
   };
 
   const runMatch = async (listOverride?: MatchProfile[]) => {
@@ -331,16 +444,25 @@ export default function MatchFunnel({
       } catch {}
     }
 
-    const chosen = pickMatch(list, usedIds);
+    const exclude = usedIdsRef.current;
+    const { chosen, resetUsed } = pickMatch(list, exclude);
     if (!chosen) {
-      setError('No match profiles found at this moment. Please try again.');
+      setError('No travellers available right now. Please try again in a moment.');
       setPhase('home');
       return;
     }
 
-    setUsedIds((prev) => (prev.includes(chosen.userId) ? prev : [...prev, chosen.userId]));
+    const nextUsed = resetUsed
+      ? [chosen.userId]
+      : exclude.includes(chosen.userId)
+        ? exclude
+        : [...exclude, chosen.userId];
+    usedIdsRef.current = nextUsed;
+    setUsedIds(nextUsed);
     setMatch(chosen);
     setPhase('match');
+    saveToMatchedHistory(chosen);
+
     trackPixel('ViewContent', {
       content_name: chosen.displayName,
       content_ids: [chosen.userId],
@@ -348,9 +470,28 @@ export default function MatchFunnel({
   };
 
   const handleFind = async () => {
+    // Check 3-per-day search limit
+    if (searchData.count >= DAILY_SEARCH_LIMIT) {
+      const hoursLeft = Math.max(1, Math.ceil((searchData.resetAt - Date.now()) / (1000 * 60 * 60)));
+      setError(`Daily search limit reached (${DAILY_SEARCH_LIMIT}/${DAILY_SEARCH_LIMIT}). You can chat with your saved matches below. Resets in ${hoursLeft}h.`);
+      return;
+    }
+
     setBusy(true);
     try {
+      const nextCount = searchData.count + 1;
+      const nextData: DailySearchData = { ...searchData, count: nextCount };
+      setSearchData(nextData);
+      try {
+        localStorage.setItem('cityhost_daily_searches', JSON.stringify(nextData));
+      } catch {}
+
       const list = await loadPool();
+      if (!list.length) {
+        setError('No travellers available right now. Please try again in a moment.');
+        setPhase('home');
+        return;
+      }
       await runMatch(list);
     } finally {
       setBusy(false);
@@ -358,27 +499,49 @@ export default function MatchFunnel({
   };
 
   const handleRematch = async () => {
+    // Check 3-per-day search limit
+    if (searchData.count >= DAILY_SEARCH_LIMIT) {
+      const hoursLeft = Math.max(1, Math.ceil((searchData.resetAt - Date.now()) / (1000 * 60 * 60)));
+      setError(`Daily search limit reached (${DAILY_SEARCH_LIMIT}/${DAILY_SEARCH_LIMIT}). You can chat with your saved matches below. Resets in ${hoursLeft}h.`);
+      return;
+    }
+
     setBusy(true);
     try {
-      await runMatch();
+      const nextCount = searchData.count + 1;
+      const nextData: DailySearchData = { ...searchData, count: nextCount };
+      setSearchData(nextData);
+      try {
+        localStorage.setItem('cityhost_daily_searches', JSON.stringify(nextData));
+      } catch {}
+
+      let list = pool;
+      if (!list.length) list = await loadPool();
+      if (!list.length) {
+        setError('No travellers available right now. Please try again in a moment.');
+        setPhase('home');
+        return;
+      }
+      await runMatch(list);
     } finally {
       setBusy(false);
     }
   };
 
-  const openSayHi = async (opener?: string) => {
-    if (!match) return;
+  const openSayHi = async (targetProfile?: MatchProfile, opener?: string) => {
+    const chosen = targetProfile || match;
+    if (!chosen) return;
     setBusy(true);
     setError('');
     try {
       await onSayHi(
-        match,
+        chosen,
         currentDisplayName || 'Visitor',
         opener || undefined,
         rawCity || undefined,
         { lookingForGender: lookingFor }
       );
-      trackPixel('Contact', { content_name: match.displayName });
+      trackPixel('Contact', { content_name: chosen.displayName });
       setPendingOpener(null);
     } catch {
       setError('Could not open chat. Please try again.');
@@ -388,7 +551,7 @@ export default function MatchFunnel({
   };
 
   // -------------------------------------------------------------
-  // 1. LIVE PROFILE SYNC & MATCH ANIMATION (Profiles in their home countries syncing)
+  // 1. LIVE PROFILE SYNC ANIMATION
   // -------------------------------------------------------------
   if (phase === 'spinning') {
     const syncCandidates =
@@ -403,9 +566,8 @@ export default function MatchFunnel({
           <span>FINDING UPCOMING TRAVELLERS</span>
         </div>
 
-        {/* Sync Arena: Center Match Hub with Surrounding Orbiting Candidate Bubbles */}
+        {/* Sync Arena */}
         <div className="relative w-64 h-64 flex items-center justify-center">
-          {/* Pulsing Radar Ring */}
           <div className="absolute inset-0 rounded-full border border-brand-500/30 animate-ping opacity-30 pointer-events-none" />
           <div className="absolute -inset-4 rounded-full border border-pink-500/20 animate-pulse pointer-events-none" />
 
@@ -436,30 +598,28 @@ export default function MatchFunnel({
             />
           </div>
 
-          {/* Center Main Syncing Avatar */}
-          <div className="relative z-10 w-40 h-40 rounded-full overflow-hidden ring-4 ring-brand-500 shadow-2xl shadow-brand-500/40 bg-surface-950">
+          {/* Center Main Sync Avatar */}
+          <div className="relative w-36 h-36 rounded-full overflow-hidden ring-4 ring-white/20 shadow-2xl transition-all duration-200">
             <img
               src={currentSync.photo}
-              alt=""
-              className="w-full h-full object-cover scale-110 brightness-95 transition-opacity duration-150"
+              alt={currentSync.name}
+              className="w-full h-full object-cover"
             />
-            <div className="absolute inset-0 bg-gradient-to-t from-surface-950 via-surface-950/20 to-transparent" />
-            <div className="absolute bottom-2.5 inset-x-0 text-center">
-              <span className="text-[11px] font-extrabold text-white px-3 py-0.5 rounded-full bg-black/80 backdrop-blur-md border border-white/20">
-                {currentSync.name}, {currentSync.age} · {currentSync.homeCountry}
-              </span>
+            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent flex flex-col justify-end items-center pb-2 text-white">
+              <span className="text-xs font-bold">{currentSync.name}, {currentSync.age}</span>
+              <span className="text-[10px] text-surface-300">{currentSync.homeCountry}</span>
             </div>
           </div>
         </div>
 
-        {/* Sync Status Text */}
-        <div className="mt-10 text-center space-y-2">
-          <div className="flex items-center justify-center gap-2 text-sm font-bold text-white">
-            <RefreshCw className="w-4 h-4 animate-spin text-brand-400" />
-            <span>Finding travellers planning upcoming trips{rawCity ? ` to ${rawCity}` : ''}…</span>
-          </div>
-          <p className="text-xs text-surface-400 font-medium">
-            Matching mutual travel plans, interests, and companion vibes
+        {/* Live Search Indicator */}
+        <div className="mt-8 text-center space-y-1">
+          <p className="text-sm font-bold text-white flex items-center justify-center gap-1.5">
+            <Sparkles className="w-4 h-4 text-brand-400 animate-spin" />
+            <span>Matching verified profiles…</span>
+          </p>
+          <p className="text-xs text-surface-400">
+            {rawCity ? `Travellers planning trips to ${rawCity}` : 'Connecting with verified travellers'}
           </p>
         </div>
       </div>
@@ -467,63 +627,68 @@ export default function MatchFunnel({
   }
 
   // -------------------------------------------------------------
-  // 2. MATCH RESULT CARD (No distance / km away, shows home country)
+  // 2. MATCH PHASE (ONE HERO CANDIDATE)
   // -------------------------------------------------------------
   if (phase === 'match' && match) {
-    const tripHeader = match.travel?.city || rawCity ? `Traveling soon · ${match.travel?.city || rawCity}` : 'Planning upcoming trip';
+    const isLimitReached = searchData.count >= DAILY_SEARCH_LIMIT;
+    const remainingSearches = Math.max(0, DAILY_SEARCH_LIMIT - searchData.count);
 
     return (
-      <div className="relative max-w-md mx-auto px-3 sm:px-4 pb-12">
+      <div className="relative max-w-md mx-auto px-4 pt-1 pb-8 animate-fade-in">
+        {/* Header Ribbon */}
+        <div className="flex items-center justify-between mb-3 px-1">
+          <button
+            type="button"
+            onClick={() => setPhase('home')}
+            className="text-xs font-semibold text-surface-400 hover:text-white transition flex items-center gap-1 cursor-pointer"
+          >
+            ← Back to search
+          </button>
+          <span className="text-[11px] font-extrabold text-brand-400 px-3 py-0.5 rounded-full bg-brand-500/10 border border-brand-500/30 flex items-center gap-1">
+            <Sparkles className="w-3 h-3" />
+            <span>{remainingSearches}/3 searches left today</span>
+          </span>
+        </div>
+
+        {/* Hero Match Card */}
         <div className="rounded-3xl overflow-hidden border border-brand-500/30 bg-surface-900/90 shadow-2xl shadow-brand-500/15 backdrop-blur-xl">
-          <div className="relative h-[390px] sm:h-[430px] bg-surface-950">
+          <div className="relative aspect-[4/4.5] w-full bg-surface-950 overflow-hidden">
             <img
               src={photoOf(match)}
               alt={match.displayName}
               className="w-full h-full object-cover"
             />
-            <div className="absolute inset-0 bg-gradient-to-t from-surface-950 via-surface-950/30 to-transparent pointer-events-none" />
+            <div className="absolute inset-0 bg-gradient-to-t from-surface-950 via-surface-950/20 to-transparent" />
 
-            <div className="absolute top-4 left-4 right-4 z-20 flex justify-between items-start pointer-events-none">
-              <div className="flex flex-col gap-1.5">
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/60 backdrop-blur-md text-[11px] font-bold text-white border border-white/20 shadow-lg">
-                  <Plane className="w-3.5 h-3.5 text-brand-300" />
-                  <span>{tripHeader}</span>
-                </span>
-                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/20 backdrop-blur-md text-[10px] font-bold text-emerald-300 border border-emerald-500/40 w-fit">
-                  <Flame className="w-3 h-3 fill-current" />
-                  <span>98% Great Match</span>
-                </span>
-              </div>
-
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setPendingOpener(null);
-                  setMatch(null);
-                  setPhase('home');
-                }}
-                className="pointer-events-auto w-9 h-9 rounded-full bg-black/60 text-white flex items-center justify-center border border-white/20 hover:bg-black/80 transition-colors cursor-pointer"
-                aria-label="Close match"
-              >
-                <X className="w-4 h-4" />
-              </button>
+            <div className="absolute top-3 left-3 right-3 flex items-center justify-between">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/60 backdrop-blur-md text-[11px] font-bold text-white border border-white/20 shadow-lg">
+                <Plane className="w-3.5 h-3.5 text-accent-teal" />
+                <span>{match.travel?.city ? `Visiting ${match.travel.city}` : 'Upcoming Trip'}</span>
+              </span>
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/20 backdrop-blur-md text-[10px] font-bold text-emerald-300 border border-emerald-500/40 w-fit">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span>Online</span>
+              </span>
             </div>
 
-            <div className="absolute bottom-0 left-0 right-0 p-5 space-y-1">
-              <div className="flex items-center gap-2">
-                <h2 className="text-2xl font-bold text-white tracking-tight drop-shadow-md">
+            <div className="absolute bottom-3 left-4 right-4">
+              <div className="flex items-baseline gap-2">
+                <h2 className="text-2xl font-black text-white drop-shadow-md">
                   {match.displayName}
-                  {match.age ? <span className="font-semibold text-surface-200">, {match.age}</span> : null}
                 </h2>
-                <ShieldCheck className="w-5 h-5 text-sky-400 drop-shadow-md shrink-0" />
+                {match.age && (
+                  <span className="text-lg font-bold text-surface-200">
+                    {match.age}
+                  </span>
+                )}
+                {match.country && (
+                  <span className="text-base">{countryFlag(match.country)}</span>
+                )}
               </div>
 
-              {/* Home location without any fake km distance */}
-              <p className="text-xs text-surface-300 flex items-center gap-1.5 font-medium">
+              <p className="text-xs text-surface-300 flex items-center gap-1.5 font-medium mt-0.5">
                 <MapPin className="w-3.5 h-3.5 text-brand-400 shrink-0" />
-                <span>From {[match.city, match.country].filter(Boolean).join(', ') || 'Abroad'} · Planning upcoming trip</span>
+                <span>From {[match.city, match.country].filter(Boolean).join(', ') || 'Abroad'}</span>
               </p>
             </div>
           </div>
@@ -546,18 +711,24 @@ export default function MatchFunnel({
               </div>
             )}
 
+            {error && (
+              <p className="text-xs text-rose-300 bg-rose-500/10 border border-rose-500/20 rounded-xl px-3 py-2">
+                {error}
+              </p>
+            )}
+
             <div className="flex gap-2.5 pt-1">
               <button
                 type="button"
                 onClick={handleRematch}
-                disabled={busy}
+                disabled={busy || isLimitReached}
                 className="flex-1 py-3 rounded-xl border border-surface-700 text-xs font-bold text-surface-200 hover:bg-surface-800 disabled:opacity-50 transition-colors cursor-pointer"
               >
-                Next match
+                {isLimitReached ? 'Limit (3/3)' : `Next match (${remainingSearches} left)`}
               </button>
               <button
                 type="button"
-                onClick={() => openSayHi()}
+                onClick={() => openSayHi(match)}
                 className="flex-[1.5] py-3 rounded-xl bg-white text-surface-950 hover:bg-zinc-100 text-xs font-bold flex items-center justify-center gap-2 shadow-md shadow-white/10 active:scale-98 transition-all cursor-pointer"
               >
                 <MessageCircle className="w-4 h-4 text-brand-500" />
@@ -581,7 +752,7 @@ export default function MatchFunnel({
               <button
                 key={line}
                 type="button"
-                onClick={() => openSayHi(line)}
+                onClick={() => openSayHi(match, line)}
                 className="text-left text-xs leading-relaxed px-4 py-3 rounded-2xl border border-surface-800 bg-surface-900/80 text-surface-200 hover:border-brand-500/60 hover:bg-surface-900 hover:text-white transition-all group flex items-center justify-between cursor-pointer"
               >
                 <span className="font-medium">{line}</span>
@@ -590,29 +761,76 @@ export default function MatchFunnel({
             ))}
           </div>
 
-          <div className="flex items-center justify-center gap-4 text-[11px] text-surface-500 pt-2">
-            <span className="inline-flex items-center gap-1">
-              <Lock className="w-3 h-3 text-surface-400" />
-              Direct Encrypted Chat
-            </span>
-            <span>·</span>
-            <span>Zero App Install</span>
-            <span>·</span>
-            <span>18+ Safe Community</span>
-          </div>
-
           <InstallPrompt armed forceVisible={false} compact softTeaser />
         </div>
+
+        {/* Saved Matched History Section on Match Page */}
+        {matchedHistory.length > 1 && (
+          <div className="mt-8 space-y-3 pt-6 border-t border-surface-800">
+            <div className="flex items-center justify-between px-1">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-brand-400" />
+                <h3 className="text-sm font-bold text-white">Your Matches Today ({matchedHistory.length})</h3>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {matchedHistory
+                .filter((p) => p.userId !== match.userId)
+                .map((p) => (
+                  <div
+                    key={p.userId}
+                    className="flex items-center gap-3 p-3 rounded-2xl bg-surface-900/90 border border-surface-800 hover:border-brand-500/50 transition shadow-lg group"
+                  >
+                    <div className="relative w-14 h-14 rounded-xl overflow-hidden shrink-0 ring-1 ring-surface-700">
+                      <img
+                        src={photoOf(p)}
+                        alt={p.displayName}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      />
+                      <span className="absolute bottom-1 right-1 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-surface-950" />
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <h4 className="text-xs font-bold text-white truncate">{p.displayName}</h4>
+                        {p.age && <span className="text-xs text-surface-400 font-semibold">{p.age}</span>}
+                        {p.country && <span className="text-xs">{countryFlag(p.country)}</span>}
+                      </div>
+                      <p className="text-[11px] text-accent-teal font-medium truncate mt-0.5">
+                        {p.travel?.city ? `Visiting ${p.travel.city}` : p.city ? `From ${p.city}` : 'Planning Trip'}
+                      </p>
+                      <span className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1 mt-0.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Online
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => openSayHi(p)}
+                      className="px-3 py-2 rounded-xl bg-brand-500 hover:bg-brand-400 text-white font-bold text-xs shadow-md shadow-brand-500/20 transition cursor-pointer shrink-0 flex items-center gap-1"
+                    >
+                      <MessageCircle className="w-3.5 h-3.5" />
+                      <span>Chat</span>
+                    </button>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
 
   // -------------------------------------------------------------
-  // 3. HOME PHASE (FIND A MATCH) — Telegram/iOS Minimal Luxury UI
+  // 3. HOME PHASE (FIND A MATCH)
   // -------------------------------------------------------------
+  const isLimitReached = searchData.count >= DAILY_SEARCH_LIMIT;
+  const remainingSearches = Math.max(0, DAILY_SEARCH_LIMIT - searchData.count);
+
   return (
     <div className="relative max-w-md mx-auto px-4 pt-1 pb-8">
-      {/* 1. Minimal Live Count Badge (Single line, no overlapping text on mobile) */}
+      {/* 1. Minimal Live Count Badge */}
       <div className="flex items-center justify-center mb-5">
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-900/90 border border-surface-800 shadow-sm backdrop-blur-md">
           <div className="flex -space-x-1.5 overflow-hidden shrink-0">
@@ -630,7 +848,7 @@ export default function MatchFunnel({
         </div>
       </div>
 
-      {/* 2. Hero Headline — Telegram/iOS Crisp Clean Typography */}
+      {/* 2. Hero Headline */}
       <div className="text-center mb-6 space-y-1.5">
         <h1 suppressHydrationWarning className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
           {rawCity ? `Travellers Visiting ${rawCity}` : 'Meet Travel Partners'}
@@ -640,9 +858,9 @@ export default function MatchFunnel({
         </p>
       </div>
 
-      {/* 3. Refined Minimal Configuration Card */}
+      {/* 3. Search Configuration Card */}
       <div className="rounded-3xl border border-surface-800/90 bg-surface-900/70 backdrop-blur-xl p-5 sm:p-6 space-y-5 shadow-2xl">
-        {/* Sleek Segmented Gender Selector */}
+        {/* Gender Selector */}
         <div>
           <label className="text-[11px] font-bold tracking-wider text-surface-400 uppercase mb-2.5 block">
             I want to meet
@@ -676,7 +894,7 @@ export default function MatchFunnel({
           </div>
         </div>
 
-        {/* Minimal Age Range Selector */}
+        {/* Age Range Selector */}
         <div>
           <div className="flex items-center justify-between mb-2">
             <label className="text-[11px] font-bold tracking-wider text-surface-400 uppercase">
@@ -714,25 +932,44 @@ export default function MatchFunnel({
           </div>
         </div>
 
+        {/* Daily Search Limit Status Notice */}
+        <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-surface-950/80 border border-surface-800 text-xs">
+          <span className="text-surface-300 font-medium flex items-center gap-1.5">
+            <Clock className="w-3.5 h-3.5 text-brand-400" />
+            <span>Daily Search Limit:</span>
+          </span>
+          <span className={`font-bold ${isLimitReached ? 'text-amber-400' : 'text-emerald-400'}`}>
+            {remainingSearches} of {DAILY_SEARCH_LIMIT} remaining
+          </span>
+        </div>
+
         {error && (
           <p className="text-xs text-rose-300 bg-rose-500/10 border border-rose-500/20 rounded-xl px-3.5 py-2.5">
             {error}
           </p>
         )}
 
-        {/* Premium High-Contrast Action Button */}
+        {/* Action Button */}
         <button
           type="button"
           onClick={handleFind}
-          disabled={busy}
-          className="w-full py-3.5 rounded-2xl bg-white text-surface-950 hover:bg-zinc-100 active:scale-[0.98] text-sm font-bold flex items-center justify-center gap-2 shadow-xl shadow-white/10 transition-all cursor-pointer disabled:opacity-50"
+          disabled={busy || isLimitReached}
+          className={`w-full py-3.5 rounded-2xl text-sm font-bold flex items-center justify-center gap-2 shadow-xl transition-all cursor-pointer ${
+            isLimitReached
+              ? 'bg-surface-800 text-surface-400 border border-surface-700 cursor-not-allowed'
+              : 'bg-white text-surface-950 hover:bg-zinc-100 active:scale-[0.98] shadow-white/10'
+          }`}
         >
           <Sparkles className="w-4 h-4 text-brand-500" />
-          <span>Find My Travel Match</span>
+          <span>
+            {isLimitReached
+              ? 'Daily Search Limit Reached (3/3)'
+              : `Find My Travel Match (${remainingSearches} left today)`}
+          </span>
           <ArrowRight className="w-4 h-4 text-surface-600" />
         </button>
 
-        {/* Clean, Non-wrapping Trust Badges */}
+        {/* Trust Badges */}
         <div className="flex items-center justify-center gap-3 pt-1 text-[11px] text-surface-400">
           <span className="flex items-center gap-1.5">
             <Lock className="w-3.5 h-3.5 text-emerald-400" />
@@ -746,14 +983,79 @@ export default function MatchFunnel({
           <span className="text-surface-700">·</span>
           <span className="flex items-center gap-1.5">
             <Heart className="w-3.5 h-3.5 text-rose-400 fill-current" />
-            Zero Signup
+            Chat in City Host
           </span>
         </div>
       </div>
 
+      {/* 4. Matched Profiles Saved Section (Replaces Old Marquee) */}
+      <div className="mt-8 space-y-3">
+        <div className="flex items-center justify-between px-1">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-brand-400" />
+            <h3 className="text-sm font-bold text-white">
+              Your Matches {matchedHistory.length > 0 ? `(${matchedHistory.length})` : ''}
+            </h3>
+          </div>
+          <span className="text-[11px] text-surface-400 font-medium">
+            Saved on this device
+          </span>
+        </div>
+
+        {matchedHistory.length > 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {matchedHistory.map((p) => (
+              <div
+                key={p.userId}
+                className="flex items-center gap-3 p-3 rounded-2xl bg-surface-900/90 border border-surface-800 hover:border-brand-500/50 transition shadow-lg group"
+              >
+                <div className="relative w-14 h-14 rounded-xl overflow-hidden shrink-0 ring-1 ring-surface-700">
+                  <img
+                    src={photoOf(p)}
+                    alt={p.displayName}
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                  />
+                  <span className="absolute bottom-1 right-1 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-surface-950" />
+                </div>
+
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <h4 className="text-xs font-bold text-white truncate">{p.displayName}</h4>
+                    {p.age && <span className="text-xs text-surface-400 font-semibold">{p.age}</span>}
+                    {p.country && <span className="text-xs">{countryFlag(p.country)}</span>}
+                  </div>
+                  <p className="text-[11px] text-accent-teal font-medium truncate mt-0.5">
+                    {p.travel?.city ? `Visiting ${p.travel.city}` : p.city ? `From ${p.city}` : 'Planning Trip'}
+                  </p>
+                  <span className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1 mt-0.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Online
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => openSayHi(p)}
+                  className="px-3 py-2 rounded-xl bg-brand-500 hover:bg-brand-400 text-white font-bold text-xs shadow-md shadow-brand-500/20 transition cursor-pointer shrink-0 flex items-center gap-1"
+                >
+                  <MessageCircle className="w-3.5 h-3.5" />
+                  <span>Chat</span>
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="p-6 rounded-2xl border border-dashed border-surface-800 bg-surface-900/30 text-center space-y-1.5">
+            <p className="text-xs font-semibold text-surface-300">No saved matches yet today</p>
+            <p className="text-[11px] text-surface-500 max-w-xs mx-auto">
+              Tap &quot;Find My Travel Match&quot; to discover companions. Matches will be saved here so you can chat with them anytime.
+            </p>
+          </div>
+        )}
+      </div>
+
       {/* Footer Legal Links */}
-      <p className="mt-6 text-center text-[11px] text-surface-500 space-x-2">
-        <span>18+ Safe Community</span>
+      <p className="mt-8 text-center text-[11px] text-surface-500 space-x-2">
+        <span>Private Chat</span>
         <span>·</span>
         <a href="/legal/terms" className="hover:text-surface-300">
           Terms

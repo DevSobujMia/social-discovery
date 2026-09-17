@@ -1,0 +1,15 @@
+.git/
+.gitignore
+.env
+.env.*
+node_modules/
+.next/
+.pgdata/
+scratch/
+test-results/
+qa_screenshots*/
+audit_screenshots/
+audit_results.json
+cloudflared.exe
+*.log
+!uploads/

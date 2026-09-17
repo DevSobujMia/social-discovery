@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
 import { success, error, handleApiError } from '@/lib/api-helpers';
-import { canonicalCity, findMarket, resolveGeo } from '@/lib/market';
+import { canonicalCity, findMarket, maskPhoneLast4, resolveGeo } from '@/lib/market';
 import { refreshLead } from '@/lib/leads';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -311,7 +311,14 @@ export async function GET(req: NextRequest) {
       relationshipIntention: p.relationshipIntention,
       isVerified: Boolean(p.isVerified || p.user?.isVerifiedLead),
       hideContactNumber: Boolean(p.user?.hideContactNumber),
-      contact: p.user?.hideContactNumber ? null : (p.user?.whatsapp || p.user?.phone || (p.user?.telegram ? `@${p.user.telegram}` : null)),
+      contact: (() => {
+        const raw =
+          p.user?.whatsapp ||
+          p.user?.phone ||
+          (p.user?.telegram ? `@${p.user.telegram}` : null);
+        if (!raw) return null;
+        return p.user?.hideContactNumber ? maskPhoneLast4(raw) : raw;
+      })(),
       profileOwnerType: p.user?.profileOwnerType || 'self',
       photo: nextTrip?.photoUrl || p.photos[0]?.filePath || null,
       lastActive: p.user?.lastActiveAt,
@@ -388,6 +395,7 @@ export async function PATCH(req: NextRequest) {
       lookingFor,
       relationshipIntention,
       hideContactNumber,
+      age,
     } = body;
 
     if (displayName && displayName.length > 100) {
@@ -404,13 +412,23 @@ export async function PATCH(req: NextRequest) {
       });
     }
 
+    if (age !== undefined) {
+      const parsed = age === null || age === '' ? null : parseInt(String(age), 10);
+      await prisma.user.update({
+        where: { id: currentUser.id },
+        data: {
+          age: parsed !== null && !Number.isNaN(parsed) ? parsed : null,
+        },
+      });
+    }
+
     const updateData: Record<string, unknown> = {};
     if (displayName !== undefined) updateData.displayName = displayName;
     if (dateOfBirth !== undefined)
       updateData.dateOfBirth = dateOfBirth ? new Date(dateOfBirth) : null;
     if (gender !== undefined) updateData.gender = gender || null;
-    if (country !== undefined) updateData.country = country;
-    if (city !== undefined) updateData.city = city;
+    if (country !== undefined) updateData.country = country || null;
+    if (city !== undefined) updateData.city = city || null;
     if (bio !== undefined) updateData.bio = bio;
     if (interests !== undefined) updateData.interests = interests;
     if (lookingFor !== undefined) updateData.lookingFor = lookingFor || null;

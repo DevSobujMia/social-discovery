@@ -4,12 +4,12 @@ export default function PrivacyPage() {
   return (
     <main className="min-h-screen bg-surface-950 text-white px-4 py-10">
       <article className="max-w-2xl mx-auto space-y-5 text-sm text-surface-300 leading-relaxed">
-        <p className="text-[10px] uppercase tracking-widest text-brand-400 font-bold">Heartlink</p>
+        <p className="text-[10px] uppercase tracking-widest text-brand-400 font-bold">City Host</p>
         <h1 className="text-2xl font-extrabold text-white">Privacy Policy</h1>
-        <p className="text-xs text-surface-500">Last updated 9 September 2026 · 18+ only</p>
+        <p className="text-xs text-surface-500">Last updated 15 September 2026</p>
 
         <p>
-          Heartlink is a travel-companion matching service. We collect the smallest amount of
+          City Host is a travel-companion matching service. We collect the smallest amount of
           information needed to introduce you to a traveller visiting your city and to keep that
           conversation available if you close the tab.
         </p>
@@ -37,7 +37,7 @@ export default function PrivacyPage() {
 
         <p>
           <Link href="/" className="text-brand-400 font-semibold hover:underline">
-            Back to Heartlink
+            Back to City Host
           </Link>
         </p>
       </article>

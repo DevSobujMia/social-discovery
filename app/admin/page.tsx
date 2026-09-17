@@ -44,6 +44,7 @@ import {
   Smartphone,
   Monitor,
   Tablet,
+  Pencil,
 } from 'lucide-react';
 import {
   COUNTRY_CITIES,
@@ -59,6 +60,8 @@ import {
   MessageTicks,
   sameCalendarDay,
 } from '../components/messaging';
+import { publishChatSync, subscribeChatSync } from '@/lib/chat-sync';
+import { mergeChatThread } from '@/lib/chat-thread';
 
 type LeadContactChannel = 'phone' | 'whatsapp' | 'telegram';
 
@@ -138,6 +141,26 @@ export default function AdminDashboardPage() {
   const tripPhotoFileRef = useRef<HTMLInputElement>(null);
   const [deletingTripId, setDeletingTripId] = useState<string | null>(null);
   const [savingTrip, setSavingTrip] = useState(false);
+
+  // Edit Travel Plan State
+  const [editingTrip, setEditingTrip] = useState<any | null>(null);
+  const [editTripForm, setEditTripForm] = useState({
+    id: '',
+    profileName: '',
+    country: 'United Arab Emirates',
+    customCountry: '',
+    city: 'Dubai',
+    customCity: '',
+    timing: 'soon',
+    fromDate: '',
+    toDate: '',
+    note: '',
+    photoUrl: '',
+    isActive: true,
+  });
+  const [savingEditTrip, setSavingEditTrip] = useState(false);
+  const [uploadingEditTripPhoto, setUploadingEditTripPhoto] = useState(false);
+  const editTripPhotoFileRef = useRef<HTMLInputElement>(null);
   const [profileForm, setProfileForm] = useState({
     displayName: '',
     age: '24',
@@ -172,6 +195,9 @@ export default function AdminDashboardPage() {
 
   const currentStaffRef = useRef(currentStaff);
   currentStaffRef.current = currentStaff;
+  /** Stop inbox polls after 401 / logout until staff signs in again. */
+  const staffAuthDeadRef = useRef(false);
+  const staffAuthReadyRef = useRef(false);
 
   const activeTabRef = useRef(activeTab);
   activeTabRef.current = activeTab;
@@ -196,6 +222,21 @@ export default function AdminDashboardPage() {
   };
 
   // Fetch current authenticated staff
+  const clearStaffSession = useCallback(() => {
+    staffAuthDeadRef.current = true;
+    setCurrentStaff(null);
+    currentStaffRef.current = null;
+    setSelectedChat(null);
+    setConversations([]);
+    setChatMessages([]);
+    fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ scope: 'staff' }),
+    }).catch(() => {});
+  }, []);
+
   const fetchStaffSession = useCallback(async () => {
     try {
       setLoadingStaff(true);
@@ -203,13 +244,20 @@ export default function AdminDashboardPage() {
       const data = await res.json();
       // Staff session is independent of any guest/user cookie on this browser.
       if (data.success && data.data?.staff) {
+        staffAuthDeadRef.current = false;
         setCurrentStaff(data.data.staff);
+        currentStaffRef.current = data.data.staff;
       } else {
+        staffAuthDeadRef.current = true;
         setCurrentStaff(null);
+        currentStaffRef.current = null;
       }
     } catch {
+      staffAuthDeadRef.current = true;
       setCurrentStaff(null);
+      currentStaffRef.current = null;
     } finally {
+      staffAuthReadyRef.current = true;
       setLoadingStaff(false);
     }
   }, []);
@@ -218,16 +266,27 @@ export default function AdminDashboardPage() {
     fetchStaffSession();
   }, [fetchStaffSession]);
 
+  // Ensure window/document scrolling is never trapped on admin panel
+  useEffect(() => {
+    document.documentElement.classList.add('admin-page');
+    document.body.classList.add('admin-page');
+    return () => {
+      document.documentElement.classList.remove('admin-page');
+      document.body.classList.remove('admin-page');
+    };
+  }, []);
+
   // Handle Desktop Escape Key for Admin Modals
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (showNewCampaignModal) setShowNewCampaignModal(false);
+        if (editingTrip) setEditingTrip(null);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showNewCampaignModal]);
+  }, [showNewCampaignModal, editingTrip]);
 
   // Staff login handler
   const handleStaffLogin = async (e: React.FormEvent) => {
@@ -243,7 +302,10 @@ export default function AdminDashboardPage() {
       });
       const data = await res.json();
       if (data.success && data.data?.staff) {
+        staffAuthDeadRef.current = false;
+        staffAuthReadyRef.current = true;
         setCurrentStaff(data.data.staff);
+        currentStaffRef.current = data.data.staff;
         loadAllData();
       } else {
         setLoginError(data.error?.message || 'Invalid staff credentials');
@@ -262,7 +324,12 @@ export default function AdminDashboardPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scope: 'staff' }),
     });
+    staffAuthDeadRef.current = true;
     setCurrentStaff(null);
+    currentStaffRef.current = null;
+    setSelectedChat(null);
+    setConversations([]);
+    setChatMessages([]);
   };
 
   // Data fetching functions
@@ -527,12 +594,135 @@ export default function AdminDashboardPage() {
     }
   };
 
+  const handleStartEditTrip = (plan: any) => {
+    setEditingTrip(plan);
+    const isPopularCountry = POPULAR_COUNTRIES.includes(plan.country);
+    const citiesForCountry = COUNTRY_CITIES[plan.country] || [];
+    const isPopularCity = citiesForCountry.includes(plan.city);
+
+    const fromStr = plan.fromDate ? new Date(plan.fromDate).toISOString().split('T')[0] : '';
+    const toStr = plan.toDate ? new Date(plan.toDate).toISOString().split('T')[0] : '';
+
+    setEditTripForm({
+      id: plan.id,
+      profileName: plan.profileName || 'Curated Profile',
+      country: isPopularCountry ? plan.country : 'Other',
+      customCountry: isPopularCountry ? '' : (plan.country || ''),
+      city: isPopularCity ? plan.city : 'Other',
+      customCity: isPopularCity ? '' : (plan.city || ''),
+      timing: plan.timing || 'soon',
+      fromDate: fromStr,
+      toDate: toStr,
+      note: plan.note || '',
+      photoUrl: plan.photoUrl || plan.photo || '',
+      isActive: plan.isActive !== false,
+    });
+  };
+
+  const handleCountryChangeForEditTrip = (newCountry: string) => {
+    const firstCity =
+      newCountry !== 'Other' && COUNTRY_CITIES[newCountry]?.length > 0
+        ? COUNTRY_CITIES[newCountry][0]
+        : 'Other';
+    setEditTripForm((prev) => ({
+      ...prev,
+      country: newCountry,
+      city: firstCity,
+      photoUrl: DESTINATION_PHOTOS[firstCity] || prev.photoUrl,
+    }));
+  };
+
+  const handleCityChangeForEditTrip = (newCity: string) => {
+    setEditTripForm((prev) => ({
+      ...prev,
+      city: newCity,
+      photoUrl: DESTINATION_PHOTOS[newCity] || prev.photoUrl,
+    }));
+  };
+
+  const handleUploadEditTripPhotoFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingEditTripPhoto(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await fetch('/api/upload', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.success && data.data?.url) {
+        setEditTripForm((prev) => ({ ...prev, photoUrl: data.data.url }));
+        showToast('Trip photo uploaded! 📷');
+      } else {
+        showToast(data.error?.message || 'Could not upload photo');
+      }
+    } catch {
+      showToast('Could not upload photo');
+    } finally {
+      setUploadingEditTripPhoto(false);
+      if (editTripPhotoFileRef.current) editTripPhotoFileRef.current.value = '';
+    }
+  };
+
+  const handleSaveEditTrip = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editTripForm.id) return;
+
+    const effectiveCountry = editTripForm.country === 'Other' ? editTripForm.customCountry.trim() : editTripForm.country;
+    const effectiveCity = editTripForm.city === 'Other' ? editTripForm.customCity.trim() : editTripForm.city;
+
+    if (!effectiveCountry || !effectiveCity) {
+      showToast('Please specify both destination country and city');
+      return;
+    }
+
+    setSavingEditTrip(true);
+    try {
+      const payload: any = {
+        id: editTripForm.id,
+        country: effectiveCountry,
+        city: effectiveCity,
+        timing: editTripForm.timing,
+        note: editTripForm.note.trim() || null,
+        photoUrl: editTripForm.photoUrl.trim() || null,
+        isActive: editTripForm.isActive,
+      };
+
+      if (editTripForm.timing === 'custom' && editTripForm.fromDate && editTripForm.toDate) {
+        payload.fromDate = editTripForm.fromDate;
+        payload.toDate = editTripForm.toDate;
+      }
+
+      const res = await fetch('/api/admin/travel-plans', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('Travel plan updated successfully! ✈');
+        setEditingTrip(null);
+        fetchTravelPlans();
+      } else {
+        showToast(data.error?.message || 'Failed to update travel plan');
+      }
+    } catch {
+      showToast('Failed to update travel plan');
+    } finally {
+      setSavingEditTrip(false);
+    }
+  };
+
   const fetchMasterInbox = useCallback(async () => {
+    if (!staffAuthReadyRef.current || staffAuthDeadRef.current || !currentStaffRef.current) return;
     try {
       const res = await fetch('/api/admin/conversations', {
         credentials: 'include',
         cache: 'no-store',
       });
+      if (res.status === 401) {
+        clearStaffSession();
+        return;
+      }
       const data = await res.json();
       if (data.success) {
         const list = data.data?.conversations || (Array.isArray(data.data) ? data.data : []);
@@ -546,34 +736,40 @@ export default function AdminDashboardPage() {
           );
         setConversations(normalized);
       }
-    } catch (e) {
-      console.error(e);
+    } catch {
+      // Quiet during cold compile / brief disconnects.
     }
-  }, []);
+  }, [clearStaffSession]);
 
   const fetchMasterInboxRef = useRef(fetchMasterInbox);
   fetchMasterInboxRef.current = fetchMasterInbox;
 
   const fetchChatMessages = useCallback(async (id: string, isSilent = false) => {
+    if (!staffAuthReadyRef.current || staffAuthDeadRef.current || !currentStaffRef.current) return;
     try {
       const res = await fetch(`/api/admin/conversations/${id}/messages`, {
         credentials: 'include',
         cache: 'no-store',
       });
+      if (res.status === 401) {
+        clearStaffSession();
+        return;
+      }
       const data = await res.json();
       if (selectedChatRef.current?.id !== id) return;
       if (data.success && Array.isArray(data.data?.messages)) {
-        setChatMessages(data.data.messages);
+        const incoming = data.data.messages;
+        setChatMessages((prev) => mergeChatThread(prev, incoming, id));
         if (!isSilent) {
           setTimeout(() => {
             chatMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
           }, 60);
         }
       }
-    } catch (e) {
-      console.error(e);
+    } catch {
+      // Quiet during cold compile / brief disconnects.
     }
-  }, []);
+  }, [clearStaffSession]);
 
   const fetchChatMessagesRef = useRef(fetchChatMessages);
   fetchChatMessagesRef.current = fetchChatMessages;
@@ -625,13 +821,22 @@ export default function AdminDashboardPage() {
     fetchCampaigns();
     fetchReports();
     fetchTravelPlans();
-  }, [userSearch, userStatusFilter]);
+  }, []);
 
   useEffect(() => {
     if (currentStaff) {
       loadAllData();
     }
   }, [currentStaff, loadAllData]);
+
+  // Debounced search & filter for users table — stops flooding server on typing
+  useEffect(() => {
+    if (!currentStaff) return;
+    const timer = setTimeout(() => {
+      fetchUsers();
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [userSearch, userStatusFilter, currentStaff]);
 
   // A lead counts as complete once any one contact channel has been verified.
   const isCompleteLead = useCallback(
@@ -777,13 +982,18 @@ export default function AdminDashboardPage() {
     const tick = async () => {
       if (stopped) return;
       const chatId = selectedChatRef.current?.id;
-      if (chatId && !(typeof document !== 'undefined' && document.hidden)) {
+      if (
+        chatId &&
+        staffAuthReadyRef.current &&
+        !staffAuthDeadRef.current &&
+        currentStaffRef.current
+      ) {
         await fetchChatMessagesRef.current(chatId, true);
       }
-      if (!stopped) timer = setTimeout(tick, 2500);
+      if (!stopped) timer = setTimeout(tick, 1200);
     };
 
-    timer = setTimeout(tick, 2500);
+    timer = setTimeout(tick, 800);
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
@@ -798,19 +1008,48 @@ export default function AdminDashboardPage() {
     const tick = async () => {
       if (stopped) return;
       if (
+        staffAuthReadyRef.current &&
+        !staffAuthDeadRef.current &&
         currentStaffRef.current &&
-        activeTabRef.current === 'inbox' &&
-        !(typeof document !== 'undefined' && document.hidden)
+        activeTabRef.current === 'inbox'
       ) {
         await fetchMasterInboxRef.current();
       }
-      if (!stopped) timer = setTimeout(tick, 3000);
+      if (!stopped) timer = setTimeout(tick, 2000);
     };
 
-    timer = setTimeout(tick, 3000);
+    timer = setTimeout(tick, 2000);
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    const kick = () => {
+      if (!staffAuthReadyRef.current || staffAuthDeadRef.current || !currentStaffRef.current) return;
+      if (activeTabRef.current === 'inbox') fetchMasterInboxRef.current();
+      const chatId = selectedChatRef.current?.id;
+      if (chatId) fetchChatMessagesRef.current(chatId, true);
+    };
+    const onVis = () => {
+      if (document.visibilityState === 'visible') kick();
+    };
+    window.addEventListener('focus', kick);
+    document.addEventListener('visibilitychange', onVis);
+    const unsub = subscribeChatSync((event) => {
+      if (staffAuthDeadRef.current || !currentStaffRef.current) return;
+      if (event.conversationId) {
+        fetchMasterInboxRef.current();
+        if (selectedChatRef.current?.id === event.conversationId) {
+          fetchChatMessagesRef.current(event.conversationId, true);
+        }
+      }
+    });
+    return () => {
+      window.removeEventListener('focus', kick);
+      document.removeEventListener('visibilitychange', onVis);
+      unsub();
     };
   }, []);
 
@@ -889,12 +1128,19 @@ export default function AdminDashboardPage() {
       const res = await fetch(`/api/admin/conversations/${selectedChat.id}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (data.success) {
         fetchChatMessages(selectedChat.id, true);
         fetchMasterInbox();
+        publishChatSync({
+          type: 'conversation_updated',
+          conversationId: selectedChat.id,
+          preview: effectiveContent,
+          source: 'staff',
+        });
         showToast(`Reply sent on behalf of ${representedName}! 💬`);
       } else {
         // Rollback optimistic message on error
@@ -1018,7 +1264,7 @@ export default function AdminDashboardPage() {
               <Shield className="w-6 h-6 text-white" />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-white">Heartlink Admin</h1>
+              <h1 className="text-xl font-bold text-white">City Host Admin</h1>
               <p className="text-xs text-surface-400">Direct Administrator Control Portal</p>
             </div>
           </div>
@@ -1094,7 +1340,7 @@ export default function AdminDashboardPage() {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-base font-bold text-white tracking-tight">Heartlink Admin</h1>
+                <h1 className="text-base font-bold text-white tracking-tight">City Host Admin</h1>
                 <span className="badge-teal text-[10px] uppercase font-bold px-2 py-0.5">
                   Admin
                 </span>
@@ -1106,6 +1352,7 @@ export default function AdminDashboardPage() {
           </div>
 
           <div className="flex items-center gap-2 text-xs">
+          {process.env.NODE_ENV !== 'production' && (
             <Link
               href="/simulator"
               className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-brand-500 to-accent-teal hover:from-brand-400 hover:to-accent-teal/90 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-brand-500/20 transition"
@@ -1114,6 +1361,7 @@ export default function AdminDashboardPage() {
               <Sparkles className="w-3.5 h-3.5 text-amber-300" />
               <span>Ads Simulator</span>
             </Link>
+          )}
 
             <Link
               href="/"
@@ -1222,6 +1470,7 @@ export default function AdminDashboardPage() {
             <span>Moderation & Reports</span>
           </button>
 
+          {process.env.NODE_ENV !== 'production' && (
           <Link
             href="/simulator"
             className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-amber-300 hover:text-white bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 transition shrink-0 mt-2 shadow-sm"
@@ -1229,6 +1478,7 @@ export default function AdminDashboardPage() {
             <Sparkles className="w-4 h-4 text-amber-400" />
             <span>Ads Simulator 🚀</span>
           </Link>
+          )}
         </aside>
 
         {/* Content Area */}
@@ -2725,6 +2975,15 @@ export default function AdminDashboardPage() {
 
                     <button
                       type="button"
+                      onClick={() => handleStartEditTrip(plan)}
+                      className="p-2 rounded-lg text-surface-400 hover:text-accent-teal hover:bg-accent-teal/10 transition cursor-pointer shrink-0"
+                      title="Edit travel plan"
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </button>
+
+                    <button
+                      type="button"
                       onClick={() => handleDeleteTrip(plan.id)}
                       disabled={deletingTripId === plan.id}
                       className="p-2 rounded-lg text-surface-400 hover:text-red-400 hover:bg-red-500/10 transition cursor-pointer shrink-0"
@@ -2735,6 +2994,235 @@ export default function AdminDashboardPage() {
                   </div>
                 ))}
               </div>
+
+              {/* Edit Travel Plan Modal */}
+              {editingTrip && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+                  <div className="glass-card max-w-lg w-full p-5 space-y-4 border border-surface-700 shadow-2xl rounded-2xl max-h-[90vh] overflow-y-auto">
+                    <div className="flex items-center justify-between border-b border-surface-800 pb-3">
+                      <div>
+                        <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                          <Plane className="w-4 h-4 text-accent-teal" />
+                          <span>Edit Travel Plan</span>
+                        </h3>
+                        <p className="text-[11px] text-surface-400 mt-0.5">
+                          Profile: <strong className="text-white">{editTripForm.profileName}</strong>
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setEditingTrip(null)}
+                        className="p-1.5 rounded-lg text-surface-400 hover:text-white hover:bg-surface-800 transition"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <form onSubmit={handleSaveEditTrip} className="space-y-3.5 text-xs">
+                      {/* Destination Country */}
+                      <div>
+                        <label className="input-label flex items-center gap-1">
+                          <MapPin className="w-3.5 h-3.5 text-accent-teal" />
+                          <span>Destination Country *</span>
+                        </label>
+                        <select
+                          value={editTripForm.country}
+                          onChange={(e) => handleCountryChangeForEditTrip(e.target.value)}
+                          className="input-field py-2 text-xs w-full"
+                          required
+                        >
+                          {POPULAR_COUNTRIES.map((c) => (
+                            <option key={c} value={c}>{c}</option>
+                          ))}
+                          <option value="Other">Other Country...</option>
+                        </select>
+                        {editTripForm.country === 'Other' && (
+                          <input
+                            type="text"
+                            value={editTripForm.customCountry}
+                            onChange={(e) => setEditTripForm({ ...editTripForm, customCountry: e.target.value })}
+                            placeholder="Enter destination country"
+                            className="input-field py-2 text-xs w-full mt-1.5"
+                            required
+                          />
+                        )}
+                      </div>
+
+                      {/* Destination City */}
+                      <div>
+                        <label className="input-label">Destination City *</label>
+                        {editTripForm.country !== 'Other' && COUNTRY_CITIES[editTripForm.country]?.length > 0 ? (
+                          <select
+                            value={editTripForm.city}
+                            onChange={(e) => handleCityChangeForEditTrip(e.target.value)}
+                            className="input-field py-2 text-xs w-full"
+                            required
+                          >
+                            {COUNTRY_CITIES[editTripForm.country].map((city) => (
+                              <option key={city} value={city}>{city}</option>
+                            ))}
+                            <option value="Other">Other City...</option>
+                          </select>
+                        ) : null}
+                        {(editTripForm.country === 'Other' || editTripForm.city === 'Other') && (
+                          <input
+                            type="text"
+                            value={editTripForm.customCity}
+                            onChange={(e) => setEditTripForm({ ...editTripForm, customCity: e.target.value })}
+                            placeholder="Enter destination city (e.g. Doha)"
+                            className="input-field py-2 text-xs w-full mt-1.5"
+                            required
+                          />
+                        )}
+                      </div>
+
+                      {/* Travel Timing */}
+                      <div>
+                        <label className="input-label flex items-center gap-1">
+                          <Clock className="w-3.5 h-3.5 text-accent-teal" />
+                          <span>Travel Timing</span>
+                        </label>
+                        <select
+                          value={editTripForm.timing}
+                          onChange={(e) => setEditTripForm({ ...editTripForm, timing: e.target.value })}
+                          className="input-field py-2 text-xs w-full"
+                        >
+                          {TIMING_OPTIONS.map((opt) => (
+                            <option key={opt.id} value={opt.id}>{opt.label}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Dates for custom timing */}
+                      {editTripForm.timing === 'custom' && (
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="input-label">Arrival Date</label>
+                            <input
+                              type="date"
+                              value={editTripForm.fromDate}
+                              onChange={(e) => setEditTripForm({ ...editTripForm, fromDate: e.target.value })}
+                              className="input-field py-2 text-xs w-full"
+                              required
+                            />
+                          </div>
+                          <div>
+                            <label className="input-label">Departure Date</label>
+                            <input
+                              type="date"
+                              value={editTripForm.toDate}
+                              onChange={(e) => setEditTripForm({ ...editTripForm, toDate: e.target.value })}
+                              className="input-field py-2 text-xs w-full"
+                              required
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Travel Note */}
+                      <div>
+                        <label className="input-label">Travel Note (shown on the card)</label>
+                        <input
+                          type="text"
+                          value={editTripForm.note}
+                          onChange={(e) => setEditTripForm({ ...editTripForm, note: e.target.value })}
+                          placeholder="Traveling soon · looking for local companion"
+                          className="input-field py-2 text-xs w-full"
+                        />
+                      </div>
+
+                      {/* Cover Photo */}
+                      <div className="space-y-1.5">
+                        <label className="input-label mb-0 flex items-center gap-1.5">
+                          <ImageIcon className="w-3.5 h-3.5 text-accent-teal" />
+                          <span>Trip Photo</span>
+                        </label>
+                        <div className="flex items-center gap-2.5">
+                          <div className="relative w-11 h-11 rounded-lg bg-surface-800 border border-surface-700 flex items-center justify-center shrink-0 overflow-hidden shadow-inner">
+                            {editTripForm.photoUrl ? (
+                              <img
+                                src={editTripForm.photoUrl}
+                                alt="Trip photo"
+                                className="w-full h-full object-cover"
+                                onError={(e) => {
+                                  (e.target as HTMLElement).style.display = 'none';
+                                }}
+                              />
+                            ) : (
+                              <Plane className="w-4 h-4 text-surface-500" />
+                            )}
+                          </div>
+                          <input
+                            type="text"
+                            value={editTripForm.photoUrl}
+                            onChange={(e) => setEditTripForm({ ...editTripForm, photoUrl: e.target.value })}
+                            className="input-field py-2 text-xs flex-1"
+                            placeholder="Image URL (https://...)"
+                          />
+                          <input
+                            ref={editTripPhotoFileRef}
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={handleUploadEditTripPhotoFile}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => editTripPhotoFileRef.current?.click()}
+                            disabled={uploadingEditTripPhoto}
+                            className="btn-ghost py-2 px-3 text-xs border border-surface-700 hover:border-brand-teal/60 flex items-center gap-1.5 shrink-0"
+                          >
+                            <Upload className="w-3.5 h-3.5 text-accent-teal" />
+                            <span>{uploadingEditTripPhoto ? '...' : 'Upload'}</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Active Status Toggle */}
+                      <div className="flex items-center gap-2 pt-1">
+                        <input
+                          type="checkbox"
+                          id="editTripActive"
+                          checked={editTripForm.isActive}
+                          onChange={(e) => setEditTripForm({ ...editTripForm, isActive: e.target.checked })}
+                          className="rounded border-surface-700 bg-surface-800 text-accent-teal focus:ring-accent-teal"
+                        />
+                        <label htmlFor="editTripActive" className="text-xs text-surface-300 select-none cursor-pointer">
+                          Trip plan is active (visible to visitors matching this city)
+                        </label>
+                      </div>
+
+                      {/* Action Buttons */}
+                      <div className="flex items-center justify-end gap-2 pt-2 border-t border-surface-800">
+                        <button
+                          type="button"
+                          onClick={() => setEditingTrip(null)}
+                          className="btn-ghost py-2 px-4 text-xs"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={savingEditTrip || uploadingEditTripPhoto}
+                          className="btn-primary py-2 px-5 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50"
+                        >
+                          {savingEditTrip ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              <span>Saving...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Check className="w-3.5 h-3.5" />
+                              <span>Save Changes</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

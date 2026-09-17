@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Heartlink",
-  "short_name": "Heartlink",
+  "name": "City Host",
+  "short_name": "City Host",
   "description": "Meet travellers visiting your city. Chat on-site, get reply alerts on your home screen.",
   "start_url": "/?source=pwa",
   "scope": "/",

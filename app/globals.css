@@ -39,8 +39,10 @@ html {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  overflow-x: hidden;
+  overflow-x: clip;
+  overflow-y: auto;
   width: 100%;
+  overscroll-behavior-y: none;
 }
 
 body {
@@ -48,10 +50,23 @@ body {
   color: #ffffff;
   min-height: 100vh;
   min-height: 100dvh;
-  overflow-x: hidden;
+  overflow-x: clip;
+  overflow-y: auto;
   width: 100%;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: none;
+}
+
+/* Admin dashboard & Desktop simulator — ensure unobstructed vertical scrolling */
+html.admin-page,
+body.admin-page,
+html.simulator-page,
+body.simulator-page {
+  overflow-x: clip !important;
+  overflow-y: auto !important;
+  overscroll-behavior-y: auto !important;
+  height: auto !important;
+  min-height: 100% !important;
 }
 
 /* Installed PWA / iOS home-screen — feel like a native shell */
@@ -398,3 +413,25 @@ body {
 .ambient-glow {
   animation: shimmerGlow 8s ease-in-out infinite;
 }
+
+@keyframes marqueeScroll {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-marquee-smooth {
+  display: flex;
+  width: max-content;
+  will-change: transform;
+  animation: marqueeScroll 30s linear infinite;
+}
+
+.animate-marquee-smooth:hover,
+.animate-marquee-smooth:active {
+  animation-play-state: paused;
+}
+

@@ -22,7 +22,8 @@ import {
   Globe,
   Sliders
 } from 'lucide-react';
-import { AdMockup } from './components/AdMockups';
+import { AdMockup, type AdFormat, type AdHook, type AdPlatform } from './components/AdMockups';
+import { publishChatSync } from '@/lib/chat-sync';
 
 interface ModelOption {
   displayName: string;
@@ -32,6 +33,15 @@ interface ModelOption {
   photo: string;
   userId: string;
   bio?: string;
+  gender?: string | null;
+}
+
+function isFemaleModel(m: { gender?: string | null; displayName?: string }) {
+  const g = (m.gender || '').toLowerCase();
+  if (g === 'male') return false;
+  if (g === 'female') return true;
+  // Defaults and unnamed API rows: ads never show men.
+  return true;
 }
 
 const DEFAULT_MODELS: ModelOption[] = [
@@ -84,18 +94,40 @@ const POPULAR_CITIES = [
   { city: 'New York', country: 'United States' },
 ];
 
+function canScrollY(node: HTMLElement, deltaY: number) {
+  const overflowY = window.getComputedStyle(node).overflowY;
+  if (overflowY !== 'auto' && overflowY !== 'scroll' && overflowY !== 'overlay') return false;
+  if (node.scrollHeight <= node.clientHeight + 1) return false;
+  if (deltaY < 0 && node.scrollTop > 0) return true;
+  if (deltaY > 0 && node.scrollTop + node.clientHeight < node.scrollHeight - 1) return true;
+  return false;
+}
+
+function wheelConsumedByInnerScroll(start: EventTarget | null, stopAt: ParentNode | null, deltaY: number) {
+  let node: HTMLElement | null = start instanceof HTMLElement ? start : null;
+  while (node && node !== stopAt && node !== document.body && node !== document.documentElement) {
+    if (canScrollY(node, deltaY)) return true;
+    node = node.parentElement;
+  }
+  return false;
+}
+
 export default function AdsSimulatorPage() {
-  const [platform, setPlatform] = useState<'instagram' | 'facebook' | 'tiktok'>('instagram');
+  const [platform, setPlatform] = useState<AdPlatform>('instagram');
+  const [format, setFormat] = useState<AdFormat>('stories');
+  const [hook, setHook] = useState<AdHook>('in_town');
   const [selectedCity, setSelectedCity] = useState('Dubai');
   const [selectedCountry, setSelectedCountry] = useState('United Arab Emirates');
   const [availableModels, setAvailableModels] = useState<ModelOption[]>(DEFAULT_MODELS);
   const [selectedModel, setSelectedModel] = useState<ModelOption>(DEFAULT_MODELS[0]);
-  const [campaignName, setCampaignName] = useState('dubai_travel_partners_q3');
+  const [campaignName, setCampaignName] = useState('dubai_in_town_women');
   
   // Simulator View State: 'ad_preview' or 'live_journey'
   const [viewState, setViewState] = useState<'ad_preview' | 'live_journey'>('ad_preview');
   const [iframeKey, setIframeKey] = useState(1);
   const [copiedUrl, setCopiedUrl] = useState(false);
+  const phoneFrameRef = useRef<HTMLDivElement>(null);
+  const landingIframeRef = useRef<HTMLIFrameElement>(null);
 
   // Admin Observer / Telemetry state
   const [adminLeads, setAdminLeads] = useState<any[]>([]);
@@ -104,24 +136,91 @@ export default function AdsSimulatorPage() {
   const [sendingReply, setSendingReply] = useState(false);
   const [replySuccessToast, setReplySuccessToast] = useState<string | null>(null);
 
+  // Let the document own mouse-wheel on this long desktop page
+  useEffect(() => {
+    document.documentElement.classList.add('simulator-page');
+    document.body.classList.add('simulator-page');
+    return () => {
+      document.documentElement.classList.remove('simulator-page');
+      document.body.classList.remove('simulator-page');
+    };
+  }, []);
+
+  // Phone chrome / ad mockup used to eat wheel events (overflow-y-auto).
+  // Forward unused wheel to the page so desktop mouse scroll feels normal.
+  useEffect(() => {
+    const frame = phoneFrameRef.current;
+    if (!frame) return;
+
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select')) return;
+      if (target?.closest('iframe')) return;
+      if (wheelConsumedByInnerScroll(e.target, frame, e.deltaY)) return;
+      e.preventDefault();
+      window.scrollBy({ top: e.deltaY, left: e.deltaX });
+    };
+
+    frame.addEventListener('wheel', onWheel, { passive: false });
+    return () => frame.removeEventListener('wheel', onWheel);
+  }, [viewState]);
+
+  // Same-origin landing iframe also traps wheel even when its app is overflow:hidden.
+  useEffect(() => {
+    if (viewState !== 'live_journey') return;
+    const iframe = landingIframeRef.current;
+    if (!iframe) return;
+
+    let attachedWin: Window | null = null;
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) return;
+      const doc = iframe.contentDocument;
+      if (!doc) return;
+      if (wheelConsumedByInnerScroll(e.target, doc.documentElement, e.deltaY)) return;
+      e.preventDefault();
+      window.scrollBy({ top: e.deltaY, left: e.deltaX });
+    };
+
+    const attach = () => {
+      const win = iframe.contentWindow;
+      if (!win || attachedWin === win) return;
+      if (attachedWin) attachedWin.removeEventListener('wheel', onWheel);
+      attachedWin = win;
+      win.addEventListener('wheel', onWheel, { passive: false });
+    };
+
+    iframe.addEventListener('load', attach);
+    attach();
+    return () => {
+      iframe.removeEventListener('load', attach);
+      attachedWin?.removeEventListener('wheel', onWheel);
+    };
+  }, [viewState, iframeKey]);
+
   // Fetch real discoverable models from API to enhance selection
   useEffect(() => {
     async function loadModels() {
       try {
-        const res = await fetch('/api/profiles?limit=15');
+        const res = await fetch('/api/profiles?gender=female&limit=20');
         const data = await res.json();
         if (data.success && Array.isArray(data.data?.profiles) && data.data.profiles.length > 0) {
-          const mapped: ModelOption[] = data.data.profiles.map((p: any) => ({
-            displayName: p.displayName || 'Traveler',
-            age: p.age || 26,
-            city: p.city || 'Dubai',
-            country: p.country || 'United Arab Emirates',
-            photo: p.photo || p.photos?.[0]?.filePath || DEFAULT_MODELS[0].photo,
-            userId: p.userId || p.id,
-            bio: p.bio,
-          }));
-          setAvailableModels(mapped);
-          setSelectedModel(mapped[0]);
+          const mapped: ModelOption[] = data.data.profiles
+            .map((p: any) => ({
+              displayName: p.displayName || 'Traveler',
+              age: p.age || 26,
+              city: p.city || 'Dubai',
+              country: p.country || 'United Arab Emirates',
+              photo: p.photo || p.photos?.[0]?.filePath || DEFAULT_MODELS[0].photo,
+              userId: p.userId || p.id,
+              bio: p.bio,
+              gender: p.gender,
+            }))
+            .filter(isFemaleModel);
+          if (mapped.length) {
+            setAvailableModels(mapped);
+            setSelectedModel(mapped[0]);
+          }
         }
       } catch {
         // Fall back to DEFAULT_MODELS
@@ -131,17 +230,33 @@ export default function AdsSimulatorPage() {
   }, []);
 
   // Poll recent admin leads and conversations for live observer
+  const adminTelemetryDeadRef = useRef(false);
   const refreshAdminTelemetry = useCallback(async () => {
+    if (adminTelemetryDeadRef.current) return;
     try {
       // 1. Fetch CRM Leads
-      const leadsRes = await fetch('/api/admin/users?stage=all&limit=8');
+      const leadsRes = await fetch('/api/admin/users?stage=all&limit=8', {
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      if (leadsRes.status === 401) {
+        adminTelemetryDeadRef.current = true;
+        return;
+      }
       const leadsData = await leadsRes.json();
       if (leadsData.success && Array.isArray(leadsData.data?.users)) {
         setAdminLeads(leadsData.data.users);
       }
 
       // 2. Fetch Conversations
-      const convRes = await fetch('/api/admin/conversations');
+      const convRes = await fetch('/api/admin/conversations', {
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      if (convRes.status === 401) {
+        adminTelemetryDeadRef.current = true;
+        return;
+      }
       const convData = await convRes.json();
       if (convData.success && Array.isArray(convData.data?.conversations)) {
         setAdminConversations(convData.data.conversations);
@@ -152,21 +267,30 @@ export default function AdsSimulatorPage() {
   }, []);
 
   useEffect(() => {
-    refreshAdminTelemetry();
+    const timer = setTimeout(() => {
+      refreshAdminTelemetry();
+    }, 0);
     const interval = setInterval(refreshAdminTelemetry, 3500);
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(timer);
+      clearInterval(interval);
+    };
   }, [refreshAdminTelemetry]);
 
   // Compute realistic target landing URL
   const targetLandingUrl = React.useMemo(() => {
     const params = new URLSearchParams();
     params.set('utm_source', platform);
-    params.set('utm_medium', platform === 'instagram' ? 'feed_ad' : platform === 'facebook' ? 'sponsored_post' : 'reels_video');
+    params.set(
+      'utm_medium',
+      format === 'stories' ? 'stories' : format === 'reels' || platform === 'tiktok' ? 'reels' : 'feed'
+    );
     params.set('utm_campaign', campaignName || 'travel_partners');
-    params.set('utm_content', `${selectedCity.toLowerCase()}_companion`);
+    params.set('utm_content', `${selectedCity.toLowerCase()}_${hook}`);
     params.set('city', selectedCity);
+    params.set('g', 'female');
     return `/?${params.toString()}`;
-  }, [platform, campaignName, selectedCity]);
+  }, [platform, format, hook, campaignName, selectedCity]);
 
   const handleCopyUrl = () => {
     if (typeof window !== 'undefined') {
@@ -203,6 +327,12 @@ export default function AdsSimulatorPage() {
         setReplySuccessToast('Reply delivered to customer screen in real time! ✨');
         setTimeout(() => setReplySuccessToast(null), 3500);
         refreshAdminTelemetry();
+        publishChatSync({
+          type: 'conversation_updated',
+          conversationId: convId,
+          preview: operatorReplyText.trim(),
+          source: 'staff',
+        });
       }
     } catch {
       // ignore
@@ -279,7 +409,12 @@ export default function AdsSimulatorPage() {
                 <button
                   key={p}
                   type="button"
-                  onClick={() => setPlatform(p)}
+                  onClick={() => {
+                    setPlatform(p);
+                    if (p === 'tiktok') setFormat('reels');
+                    if (p === 'facebook') setFormat('feed');
+                    if (p === 'instagram') setFormat('stories');
+                  }}
                   className={`py-1.5 text-xs font-bold rounded-lg capitalize transition cursor-pointer ${
                     platform === p
                       ? 'bg-brand-500 text-white shadow'
@@ -328,8 +463,8 @@ export default function AdsSimulatorPage() {
               className="w-full py-2 px-3 bg-surface-950 rounded-xl border border-surface-800 text-xs text-white font-medium focus:border-brand-500 outline-none"
             >
               {availableModels.map((m) => (
-                <option key={m.displayName} value={m.displayName}>
-                  {m.displayName} ({m.age}) — {m.city}
+                <option key={m.userId} value={m.displayName}>
+                  {m.displayName} ({m.age}) · visiting {selectedCity}
                 </option>
               ))}
             </select>
@@ -347,6 +482,71 @@ export default function AdsSimulatorPage() {
               className="w-full py-2 px-3 bg-surface-950 rounded-xl border border-surface-800 text-xs text-white font-mono focus:border-brand-500 outline-none"
               placeholder="e.g. summer_dubai_q3"
             />
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-surface-800 bg-surface-900/60 p-4 grid grid-cols-1 lg:grid-cols-3 gap-3.5">
+          <div>
+            <label className="text-[11px] font-bold text-surface-400 uppercase tracking-wider block mb-1.5">
+              Placement (highest CTR first)
+            </label>
+            <div className="grid grid-cols-3 gap-1 p-1 bg-surface-950 rounded-xl border border-surface-800">
+              {(
+                [
+                  { id: 'stories' as const, label: 'Stories', hint: 'Best' },
+                  { id: 'reels' as const, label: 'Reels', hint: 'Scale' },
+                  { id: 'feed' as const, label: 'Feed', hint: 'Cheap' },
+                ] as const
+              ).map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  disabled={platform === 'tiktok' && f.id !== 'reels'}
+                  onClick={() => setFormat(f.id)}
+                  className={`py-1.5 text-[11px] font-bold rounded-lg transition cursor-pointer disabled:opacity-30 ${
+                    format === f.id
+                      ? 'bg-white text-surface-950'
+                      : 'text-surface-400 hover:text-white'
+                  }`}
+                >
+                  {f.label}
+                  <span className="block text-[9px] font-medium opacity-70">{f.hint}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="text-[11px] font-bold text-surface-400 uppercase tracking-wider block mb-1.5">
+              Winning hook
+            </label>
+            <div className="grid grid-cols-3 gap-1 p-1 bg-surface-950 rounded-xl border border-surface-800">
+              {(
+                [
+                  { id: 'in_town' as const, label: 'In town' },
+                  { id: 'say_hi' as const, label: 'Say hi' },
+                  { id: 'dinner' as const, label: 'Dinner' },
+                ] as const
+              ).map((h) => (
+                <button
+                  key={h.id}
+                  type="button"
+                  onClick={() => setHook(h.id)}
+                  className={`py-2 text-[11px] font-bold rounded-lg transition cursor-pointer ${
+                    hook === h.id
+                      ? 'bg-brand-500 text-white'
+                      : 'text-surface-400 hover:text-white'
+                  }`}
+                >
+                  {h.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/5 px-3.5 py-2.5 text-[11px] text-surface-300 leading-relaxed">
+            <p className="font-bold text-emerald-300 mb-1">Ads show women only</p>
+            Male travel profiles stay on the site — some visitors look for men. Creatives never use male photos.
           </div>
         </div>
 
@@ -374,7 +574,7 @@ export default function AdsSimulatorPage() {
           {/* ============================================================ */}
           {/* LEFT: CUSTOMER MOBILE VIEWPORT                                */}
           {/* ============================================================ */}
-          <div className="lg:col-span-6 xl:col-span-5 flex flex-col items-center">
+          <div className="lg:col-span-6 xl:col-span-5 flex flex-col items-center lg:sticky lg:top-20 lg:self-start">
             {/* Viewport Control Bar */}
             <div className="w-full max-w-[420px] flex items-center justify-between mb-3 px-2">
               <div className="flex items-center gap-1.5">
@@ -413,7 +613,10 @@ export default function AdsSimulatorPage() {
             </div>
 
             {/* Realistic Mobile Frame */}
-            <div className="w-full max-w-[400px] h-[680px] sm:h-[720px] rounded-[42px] p-3 bg-gradient-to-b from-surface-700 via-surface-900 to-black shadow-2xl border-4 border-surface-700 relative overflow-hidden flex flex-col">
+            <div
+              ref={phoneFrameRef}
+              className="w-full max-w-[400px] h-[680px] sm:h-[720px] rounded-[42px] p-3 bg-gradient-to-b from-surface-700 via-surface-900 to-black shadow-2xl border-4 border-surface-700 relative overflow-hidden flex flex-col"
+            >
               {/* Phone Camera Notch */}
               <div className="w-32 h-4.5 bg-black rounded-full mx-auto mb-2 shrink-0 flex items-center justify-center">
                 <div className="w-3 h-3 rounded-full bg-surface-900/80 mr-3" />
@@ -421,21 +624,26 @@ export default function AdsSimulatorPage() {
               </div>
 
               {/* Viewport Screen Body */}
-              <div className="w-full flex-1 rounded-[32px] overflow-hidden bg-surface-950 relative border border-surface-850">
+              <div className="w-full flex-1 min-h-0 rounded-[32px] overflow-hidden bg-surface-950 relative border border-surface-850">
                 {viewState === 'ad_preview' ? (
-                  <div className="w-full h-full overflow-y-auto p-2 sm:p-3 flex items-center justify-center">
-                    <AdMockup
-                      platform={platform}
-                      city={selectedCity}
-                      country={selectedCountry}
-                      targetProfile={selectedModel}
-                      campaignName={campaignName}
-                      onAdClick={handleStartJourney}
-                    />
+                  <div className="w-full h-full overflow-hidden p-2 sm:p-3 flex items-center justify-center">
+                    <div className="w-full origin-center scale-[0.92] sm:scale-100">
+                      <AdMockup
+                        platform={platform}
+                        format={format}
+                        hook={hook}
+                        city={selectedCity}
+                        country={selectedCountry}
+                        targetProfile={selectedModel}
+                        campaignName={campaignName}
+                        onAdClick={handleStartJourney}
+                      />
+                    </div>
                   </div>
                 ) : (
                   <iframe
                     key={iframeKey}
+                    ref={landingIframeRef}
                     src={targetLandingUrl}
                     title="Customer Landing Funnel"
                     className="w-full h-full border-0"
@@ -458,6 +666,47 @@ export default function AdsSimulatorPage() {
           {/* RIGHT: REAL-TIME ADMIN CRM OBSERVER & TELEMETRY              */}
           {/* ============================================================ */}
           <div className="lg:col-span-6 xl:col-span-7 space-y-4">
+            {/* Click-max playbook */}
+            <div className="rounded-2xl border border-surface-800 bg-surface-900/70 p-5 space-y-3">
+              <h3 className="text-sm font-bold text-white">How to set ads for maximum clicks</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-[11px] leading-relaxed">
+                <div className="p-3 rounded-xl bg-surface-950 border border-surface-800">
+                  <p className="font-bold text-white mb-1">1. Placement</p>
+                  Instagram Stories first, then Reels. Feed is cheaper but slower. One woman, close-up face, city in the first 1 second.
+                </div>
+                <div className="p-3 rounded-xl bg-surface-950 border border-surface-800">
+                  <p className="font-bold text-white mb-1">2. Targeting</p>
+                  Men 23–38, city + nearby, expats/travel interest. Language English. Do not mix genders in one ad set.
+                </div>
+                <div className="p-3 rounded-xl bg-surface-950 border border-surface-800">
+                  <p className="font-bold text-white mb-1">3. Copy</p>
+                  Specific &gt; generic. “She’s in Dubai this week” beats “find travel partners”. CTA: Say hi on City Host.
+                </div>
+                <div className="p-3 rounded-xl bg-surface-950 border border-surface-800">
+                  <p className="font-bold text-white mb-1">4. Never</p>
+                  No male faces, no couples, no “dating app”, no WhatsApp number on the creative (policy + chaos).
+                </div>
+              </div>
+            </div>
+
+            {/* Direct WA vs site inbox */}
+            <div className="rounded-2xl border border-surface-800 bg-surface-900/70 p-5 space-y-3">
+              <h3 className="text-sm font-bold text-white">Click-to-WhatsApp vs site inbox</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-[11px] leading-relaxed">
+                <div className="p-3 rounded-xl bg-surface-950 border border-amber-500/25">
+                  <p className="font-bold text-amber-300 mb-1">Ads → WhatsApp / Telegram</p>
+                  More clicks, cheaper CPC. Then: mixed chats, burned numbers, no UTM, no incomplete/complete, Meta policy risk, one agent drowning.
+                </div>
+                <div className="p-3 rounded-xl bg-surface-950 border border-emerald-500/30">
+                  <p className="font-bold text-emerald-300 mb-1">Ads → City Host inbox (your setup)</p>
+                  Slightly fewer clicks. Far less hassle: attribution, one CRM, verify on message 3, still collect WA after they chat. Best for small ads + scale.
+                </div>
+              </div>
+              <p className="text-[11px] text-surface-400">
+                Recommendation: keep the site inbox as the front door. Collect WhatsApp only after they already talked — quality over raw click volume.
+              </p>
+            </div>
+
             {/* Real-time Journey Progress Steps */}
             <div className="rounded-2xl border border-surface-800 bg-surface-900/70 p-5 space-y-4">
               <div className="flex items-center justify-between">

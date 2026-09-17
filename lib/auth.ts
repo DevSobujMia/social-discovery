@@ -8,6 +8,7 @@ const AUTH_SECRET = process.env.AUTH_SECRET || 'fallback-dev-secret';
 
 if (
   process.env.NODE_ENV === 'production' &&
+  process.env.NEXT_PHASE !== 'phase-production-build' &&
   (!process.env.AUTH_SECRET || process.env.AUTH_SECRET === 'fallback-dev-secret')
 ) {
   throw new Error(

@@ -11,6 +11,7 @@
  */
 
 const DEVICE_KEY = 'heartlink_device';
+const LOGOUT_FLAG_KEY = 'heartlink_logged_out';
 const AD_PARAMS_KEY = 'heartlink_ad_params';
 
 function randomToken(): string {
@@ -44,6 +45,47 @@ export function getDeviceToken(): string | null {
     return token;
   } catch {
     return null;
+  }
+}
+
+/** Replace the stored device token so a previous lead can no longer auto-resume. */
+export function rotateDeviceToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const token = randomToken();
+    window.localStorage.setItem(DEVICE_KEY, token);
+    return token;
+  } catch {
+    return null;
+  }
+}
+
+/** Explicit Log Out — skip device-resume until they sign in again. */
+export function markExplicitLogout(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(LOGOUT_FLAG_KEY, '1');
+  } catch {
+    // Flag is best-effort; rotate still breaks resume.
+  }
+  rotateDeviceToken();
+}
+
+export function clearExplicitLogout(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(LOGOUT_FLAG_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+export function isExplicitLogout(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(LOGOUT_FLAG_KEY) === '1';
+  } catch {
+    return false;
   }
 }
 

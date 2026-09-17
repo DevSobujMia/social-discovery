@@ -7,12 +7,12 @@
     "go": "node scripts/dev-all.mjs",
     "dev:next": "next dev --webpack",
     "db": "node scripts/dev-db.mjs",
-    "build": "next build --webpack",
+    "build": "next build",
     "start": "node scripts/prod-all.mjs",
+    "deploy": "gcloud run deploy cityhost-app --source . --region asia-south1 --allow-unauthenticated",
     "lint": "eslint"
   },
   "dependencies": {
-    "@next/swc-win32-x64-msvc": "^16.3.4",
     "@prisma/client": "^6.19.3",
     "bcryptjs": "^3.0.3",
     "jsonwebtoken": "^9.0.3",
@@ -23,6 +23,9 @@
     "react-dom": "19.2.8",
     "sharp": "^0.35.4",
     "uuid": "^14.0.2"
+  },
+  "optionalDependencies": {
+    "@next/swc-win32-x64-msvc": "^16.3.4"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",

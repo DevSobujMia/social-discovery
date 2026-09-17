@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import {
@@ -34,6 +34,7 @@ import {
   EyeOff
 } from 'lucide-react';
 import InstallPrompt from './components/InstallPrompt';
+import PullToRefresh from './components/PullToRefresh';
 import MatchFunnel, { type MatchProfile as FunnelMatch } from './components/MatchFunnel';
 import { PostTravelPlanModal } from '@/components/PostTravelPlanModal';
 import {
@@ -53,12 +54,18 @@ import {
 } from './components/TravelBadge';
 import {
   collectDeviceSnapshot,
+  clearExplicitLogout,
   getDeviceToken,
   inferVisitorAge,
+  isExplicitLogout,
   loadAdParams,
+  markExplicitLogout,
   type AdParams,
 } from '@/lib/device';
+import { citiesForCountry, maskPhoneLast4, PROFILE_LOCATIONS } from '@/lib/market';
 import { trackPixel } from '@/lib/pixel';
+import { publishChatSync, subscribeChatSync } from '@/lib/chat-sync';
+import { threadFingerprint } from '@/lib/chat-thread';
 
 interface ProfilePhoto {
   id: string;
@@ -141,6 +148,99 @@ interface ChatMessage {
   createdAt: string;
 }
 
+type AppTab = 'discover' | 'messenger' | 'profile';
+
+const NAV_TAB_KEY = 'heartlink_tab';
+const NAV_CHAT_OPEN_KEY = 'heartlink_chat_open';
+const NAV_CHAT_META_KEY = 'heartlink_last_chat';
+const NAV_THREAD_KEY = 'heartlink_last_thread';
+const NAV_CHAT_ID_KEY = 'heartlink_last_conv_id';
+
+function readNavTab(): AppTab {
+  if (typeof window === 'undefined') return 'discover';
+  try {
+    const t = window.localStorage.getItem(NAV_TAB_KEY);
+    if (t === 'messenger' || t === 'profile' || t === 'discover') return t;
+  } catch {
+    // ignore
+  }
+  return 'discover';
+}
+
+function persistNavTab(tab: AppTab) {
+  try {
+    window.localStorage.setItem(NAV_TAB_KEY, tab);
+  } catch {
+    // ignore
+  }
+}
+
+function persistChatOpen(open: boolean) {
+  try {
+    window.localStorage.setItem(NAV_CHAT_OPEN_KEY, open ? '1' : '0');
+  } catch {
+    // ignore
+  }
+}
+
+function persistChatMeta(conv: ConversationItem) {
+  if (!conv?.id || conv.id.startsWith('pending-')) return;
+  try {
+    window.localStorage.setItem(NAV_CHAT_ID_KEY, conv.id);
+    window.localStorage.setItem(NAV_CHAT_META_KEY, JSON.stringify(conv));
+  } catch {
+    // ignore
+  }
+}
+
+function persistThread(conversationId: string, messages: ChatMessage[]) {
+  if (!conversationId || conversationId.startsWith('pending-')) return;
+  try {
+    window.localStorage.setItem(
+      NAV_THREAD_KEY,
+      JSON.stringify({ id: conversationId, messages: messages.slice(-80) })
+    );
+  } catch {
+    // ignore
+  }
+}
+
+function readStoredChatMeta(): ConversationItem | null {
+  try {
+    const raw = window.localStorage.getItem(NAV_CHAT_META_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.id || !parsed?.participant) return null;
+    return parsed as ConversationItem;
+  } catch {
+    return null;
+  }
+}
+
+function readStoredThread(): { id: string; messages: ChatMessage[] } | null {
+  try {
+    const raw = window.localStorage.getItem(NAV_THREAD_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.id || !Array.isArray(parsed.messages)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function clearNavPersistence() {
+  try {
+    window.localStorage.removeItem(NAV_TAB_KEY);
+    window.localStorage.removeItem(NAV_CHAT_OPEN_KEY);
+    window.localStorage.removeItem(NAV_CHAT_META_KEY);
+    window.localStorage.removeItem(NAV_THREAD_KEY);
+    window.localStorage.removeItem(NAV_CHAT_ID_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 function formatMessageTime(isoString?: string | null): string {
   if (!isoString) return '';
   try {
@@ -170,8 +270,9 @@ interface PendingIntent {
 }
 
 export default function AppHome() {
-  // Navigation & View state (always default to discover / Find page for incoming visitors)
-  const [activeTab, setActiveTab] = useState<'discover' | 'messenger' | 'profile'>('discover');
+  // Navigation & View state — restored from localStorage after mount (PWA refresh).
+  const [activeTab, setActiveTab] = useState<AppTab>('discover');
+  const [navReady, setNavReady] = useState(false);
   const initialChatOpenedRef = useRef(false);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [loadingUser, setLoadingUser] = useState(true);
@@ -209,20 +310,19 @@ export default function AppHome() {
   const [showTravelPlanModal, setShowTravelPlanModal] = useState(false);
   const [userTravelPlans, setUserTravelPlans] = useState<any[]>([]);
   const [hideContactNumber, setHideContactNumber] = useState<boolean>(false);
+  // localStorage guest name — hydrated after mount to avoid SSR mismatch.
+  const [storedGuestName, setStoredGuestName] = useState<string | null>(null);
 
-  // Inline chat name collection for frictionless messaging
+  // Inline chat onboarding: phone verify first, then name
   const [inlineNameInput, setInlineNameInput] = useState('');
-  const [submittingInlineName, setSubmittingInlineName] = useState(false);
+  const [inlinePhoneInput, setInlinePhoneInput] = useState('');
+  const [submittingInlinePhone, setSubmittingInlinePhone] = useState(false);
+  const [inlinePhoneError, setInlinePhoneError] = useState('');
   const [pendingChatOpener, setPendingChatOpener] = useState<string | null>(null);
+  const [chatUnlocked, setChatUnlocked] = useState(false);
 
   // Auth Modal state
   const [showAuthModal, setShowAuthModal] = useState(false);
-  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'contact_login'>('login');
-  const [authEmail, setAuthEmail] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
-  const [authName, setAuthName] = useState('');
-  const [authGender, setAuthGender] = useState('female');
-  const [authCountry, setAuthCountry] = useState('United States');
   const [authError, setAuthError] = useState('');
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [contactLoginInput, setContactLoginInput] = useState('');
@@ -255,11 +355,16 @@ export default function AppHome() {
   const [replySenderName, setReplySenderName] = useState<string | null>(null);
   const [peerTyping, setPeerTyping] = useState(false);
   const peerTypingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [refreshingThread, setRefreshingThread] = useState(false);
 
   // Profile Edit state
   const [editBio, setEditBio] = useState('');
   const [editLookingFor, setEditLookingFor] = useState('');
   const [editInterests, setEditInterests] = useState('');
+  const [editGender, setEditGender] = useState<'male' | 'female' | ''>('');
+  const [editAge, setEditAge] = useState('');
+  const [editCountry, setEditCountry] = useState('');
+  const [editCity, setEditCity] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
 
   // Navigation & Modal Back Synchronization Refs
@@ -281,6 +386,9 @@ export default function AppHome() {
   const activeChatRef = useRef(activeChat);
   activeChatRef.current = activeChat;
   const messagesFpRef = useRef('');
+  const threadCacheRef = useRef<Record<string, ChatMessage[]>>({});
+  const messageFetchGenRef = useRef<Record<string, number>>({});
+  const fetchMessagesRef = useRef<(conversationId: string) => Promise<void>>(async () => {});
 
   const activeTabRef = useRef(activeTab);
   activeTabRef.current = activeTab;
@@ -289,6 +397,8 @@ export default function AppHome() {
   currentUserRef.current = currentUser;
   /** Stop inbox/message polls after a 401 until the user signs in again. */
   const authDeadRef = useRef(false);
+  /** Don't poll until the first /api/auth/me finishes (avoids orphan-cookie spam after DB wipe). */
+  const authReadyRef = useRef(false);
 
   // Block management state
   const [blockedUserIds, setBlockedUserIds] = useState<string[]>([]);
@@ -343,8 +453,7 @@ export default function AppHome() {
     }
   };
 
-  const handleOpenAuthModal = (mode: 'login' | 'signup' | 'contact_login' = 'login') => {
-    setAuthMode(mode);
+  const handleOpenAuthModal = (_mode: 'login' | 'signup' | 'contact_login' = 'contact_login') => {
     setAuthError('');
     setShowAuthModal(true);
     if (typeof window !== 'undefined') {
@@ -361,14 +470,22 @@ export default function AppHome() {
   };
 
   const handleSelectChat = (conv: ConversationItem) => {
+    const switching = activeChatRef.current?.id !== conv.id;
     setActiveChat(conv);
-    setMessages([]);
-    messagesFpRef.current = '';
+    if (switching) {
+      const cached = threadCacheRef.current[conv.id];
+      setMessages(cached && cached.length ? cached : []);
+      messagesFpRef.current = cached?.length
+        ? threadFingerprint(cached)
+        : '';
+    }
     setPeerTyping(false);
     stickToBottomRef.current = true;
+    persistChatOpen(true);
+    persistChatMeta(conv);
+    persistNavTab('messenger');
     try {
       localStorage.setItem('heartlink_has_chatted', 'true');
-      localStorage.setItem('heartlink_last_conv_id', conv.id);
     } catch {}
     // Clear badge instantly — server mark-read runs on GET messages.
     setConversations((prev) =>
@@ -379,18 +496,23 @@ export default function AppHome() {
       )
     );
     if (typeof window !== 'undefined') {
-      window.history.pushState({ chat: conv.id }, '');
+      window.history.pushState({ chat: conv.id, tab: 'messenger' }, '');
     }
   };
 
   const handleCloseChat = () => {
     setActiveChat(null);
+    setConversations((prev) => prev.filter((c) => !c.id.startsWith('pending-')));
+    persistChatOpen(false);
+    persistNavTab('messenger');
     if (typeof window !== 'undefined' && window.history.state?.chat) {
       window.history.back();
     }
   };
 
-  const handleSwitchTab = (tab: 'discover' | 'messenger' | 'profile') => {
+  const handleSwitchTab = (tab: AppTab) => {
+    persistNavTab(tab);
+    if (tab !== 'messenger') persistChatOpen(false);
     if (tab === activeTabRef.current) return;
     setActiveTab(tab);
     if (tab === 'messenger') {
@@ -442,18 +564,46 @@ export default function AppHome() {
       // 5. Return from active chat to conversation list
       if (activeChatRef.current) {
         setActiveChat(null);
+        persistChatOpen(false);
+        persistNavTab('messenger');
         return;
       }
       // 6. If state contains tab, switch to it, otherwise return to Discover
       if (e.state?.tab) {
         setActiveTab(e.state.tab);
+        persistNavTab(e.state.tab);
       } else if (activeTabRef.current !== 'discover') {
         setActiveTab('discover');
+        persistNavTab('discover');
       }
     };
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  // Restore last tab / open chat before paint so PWA refresh stays put.
+  useLayoutEffect(() => {
+    try {
+      const tab = readNavTab();
+      setActiveTab(tab);
+      if (tab === 'messenger') {
+        const chatOpen = window.localStorage.getItem(NAV_CHAT_OPEN_KEY) === '1';
+        const meta = readStoredChatMeta();
+        const thread = readStoredThread();
+        if (chatOpen && meta) {
+          setActiveChat(meta);
+          if (thread?.id === meta.id && thread.messages.length) {
+            threadCacheRef.current[meta.id] = thread.messages;
+            setMessages(thread.messages);
+            messagesFpRef.current = threadFingerprint(thread.messages);
+          }
+        }
+      }
+    } catch {
+      // Stay on discover if storage is unavailable.
+    }
+    setNavReady(true);
   }, []);
 
   // Handle Desktop Escape Key for all modals
@@ -549,6 +699,11 @@ export default function AppHome() {
     setActiveChat(null);
     setConversations([]);
     setMessages([]);
+    threadCacheRef.current = {};
+    messageFetchGenRef.current = {};
+    setChatUnlocked(false);
+    setActiveTab('discover');
+    clearNavPersistence();
     // Drop the orphan JWT so polls cannot keep 401-spamming after a DB reset.
     fetch('/api/auth/logout', {
       method: 'POST',
@@ -560,11 +715,12 @@ export default function AppHome() {
 
   const fetchCurrentUser = useCallback(async () => {
     try {
-      setLoadingUser(true);
+      if (!currentUserRef.current) setLoadingUser(true);
       const res = await fetch('/api/auth/me', { credentials: 'include', cache: 'no-store' });
       const data = await res.json();
       if (data.success && data.data?.user) {
         authDeadRef.current = false;
+        clearExplicitLogout();
         setCurrentUser(data.data.user);
         currentUserRef.current = data.data.user;
         if (Array.isArray(data.data.user.profile?.travelPlans)) {
@@ -572,8 +728,19 @@ export default function AppHome() {
         }
         setHideContactNumber(Boolean(data.data.user.hideContactNumber));
         setEditBio(data.data.user.profile?.bio || '');
-        setEditLookingFor(data.data.user.profile?.lookingFor || 'relationship');
+        setEditLookingFor(data.data.user.profile?.lookingFor || '');
         setEditInterests(data.data.user.profile?.interests?.join(', ') || '');
+        setEditGender(
+          data.data.user.profile?.gender === 'male' || data.data.user.profile?.gender === 'female'
+            ? data.data.user.profile.gender
+            : ''
+        );
+        setEditAge(data.data.user.age ? String(data.data.user.age) : '');
+        setEditCountry(data.data.user.profile?.country || '');
+        setEditCity(data.data.user.profile?.city || '');
+        if (data.data.user.isVerifiedLead || data.data.user.phone) {
+          setChatUnlocked(true);
+        }
         return data.data.user;
       } else {
         // Soft clear — do not call logout here (me already drops orphan cookies).
@@ -583,6 +750,9 @@ export default function AppHome() {
         setActiveChat(null);
         setConversations([]);
         setMessages([]);
+        threadCacheRef.current = {};
+        messageFetchGenRef.current = {};
+        setChatUnlocked(false);
         return null;
       }
     } catch {
@@ -591,6 +761,7 @@ export default function AppHome() {
       currentUserRef.current = null;
       return null;
     } finally {
+      authReadyRef.current = true;
       setLoadingUser(false);
     }
   }, []);
@@ -599,10 +770,19 @@ export default function AppHome() {
     fetchCurrentUser();
   }, [fetchCurrentUser]);
 
+  useEffect(() => {
+    try {
+      setStoredGuestName(localStorage.getItem('heartlink_guest_name'));
+    } catch {
+      setStoredGuestName(null);
+    }
+  }, [currentUser?.profile?.displayName]);
+
   // Recover the lead when the session cookie is gone but the browser still
   // holds its device token. Without this, a returning visitor who cleared
   // cookies would silently become a brand new lead and lose their chat.
   useEffect(() => {
+    if (isExplicitLogout()) return;
     const token = getDeviceToken();
     if (!token) return;
 
@@ -619,7 +799,7 @@ export default function AppHome() {
           }),
         });
         const data = await res.json();
-        if (cancelled || !data.success || !data.data?.resumed) return;
+        if (cancelled || isExplicitLogout() || !data.success || !data.data?.resumed) return;
 
         await fetchCurrentUser();
         setActionNotice('Welcome back — your conversation is right here.');
@@ -717,7 +897,7 @@ export default function AppHome() {
   );
 
   const fetchConversations = useCallback(async (silent = false) => {
-    if (authDeadRef.current || !currentUserRef.current) return [];
+    if (!authReadyRef.current || authDeadRef.current || !currentUserRef.current) return [];
     try {
       if (!silent) setLoadingConversations(true);
       const res = await fetch('/api/conversations', {
@@ -731,26 +911,55 @@ export default function AppHome() {
       const data = await res.json();
       if (data.success && Array.isArray(data.data?.conversations)) {
         const list: ConversationItem[] = data.data.conversations;
-        // Keep active chat unread at 0 even if a poll races the mark-read.
-        const activeId = activeChatRef.current?.id;
+        // Only clear the badge while the thread is actually on screen.
+        const viewingId =
+          activeTabRef.current === 'messenger' ? activeChatRef.current?.id : null;
         const normalized = sortConversations(
           list.map((c) =>
-            activeId && c.id === activeId
+            viewingId && c.id === viewingId
               ? { ...c, participant: { ...c.participant, unreadCount: 0 } }
               : c
           )
         );
         setConversations(normalized);
 
-        // Returning visitor routing: ONLY auto-open messenger if there are unread messages waiting.
-        // Otherwise, stay on the discover (Find) page as the default.
+        if (viewingId) {
+          const open = normalized.find((c) => c.id === viewingId);
+          const preview = (open?.lastMessagePreview || '').trim();
+          const thread = threadCacheRef.current[viewingId] || [];
+          const previewInThread = preview
+            ? thread.some((m) => (m.content || '').trim() === preview)
+            : true;
+          if (preview && !previewInThread) {
+            void fetchMessagesRef.current(viewingId);
+          }
+        }
+
+        // Restore the last open thread after a PWA / page reload.
         if (normalized.length > 0 && !initialChatOpenedRef.current) {
-          const unreadConv = normalized.find((c) => (c.participant.unreadCount || 0) > 0);
-          if (unreadConv) {
-            initialChatOpenedRef.current = true;
-            setActiveTab('messenger');
-            if (!activeChatRef.current) {
-              handleSelectChat(unreadConv);
+          initialChatOpenedRef.current = true;
+          const storedTab = readNavTab();
+          const lastId = (() => {
+            try {
+              return window.localStorage.getItem(NAV_CHAT_ID_KEY);
+            } catch {
+              return null;
+            }
+          })();
+          const chatOpen = (() => {
+            try {
+              return window.localStorage.getItem(NAV_CHAT_OPEN_KEY) === '1';
+            } catch {
+              return false;
+            }
+          })();
+          if (storedTab === 'messenger' && chatOpen && lastId) {
+            const conv = normalized.find((c) => c.id === lastId);
+            if (conv) {
+              if (!activeChatRef.current || activeChatRef.current.id === lastId) {
+                setActiveChat(conv);
+                persistChatMeta(conv);
+              }
             }
           }
         }
@@ -758,8 +967,8 @@ export default function AppHome() {
         return normalized;
       }
       return [];
-    } catch (err) {
-      console.error('Failed to load conversations:', err);
+    } catch {
+      // Quiet: cold compile / brief network blips during `npm run dev` are expected.
       return [];
     } finally {
       if (!silent) setLoadingConversations(false);
@@ -771,45 +980,58 @@ export default function AppHome() {
 
   // Fetch messages for active chat
   const fetchMessages = useCallback(async (conversationId: string) => {
-    if (authDeadRef.current || !currentUserRef.current) return;
+    if (!authReadyRef.current || authDeadRef.current || !currentUserRef.current) return;
+    const gen = (messageFetchGenRef.current[conversationId] || 0) + 1;
+    messageFetchGenRef.current[conversationId] = gen;
     try {
-      const res = await fetch(`/api/conversations/${conversationId}/messages`, {
-        credentials: 'include',
-        cache: 'no-store',
-      });
+      const res = await fetch(
+        `/api/conversations/${conversationId}/messages?limit=300&ts=${Date.now()}`,
+        {
+          credentials: 'include',
+          cache: 'no-store',
+          headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+        }
+      );
+      if (messageFetchGenRef.current[conversationId] !== gen) return;
       if (res.status === 401) {
         clearGuestSession();
         return;
       }
       const data = await res.json();
-      if (activeChatRef.current?.id !== conversationId) return;
-      if (data.success && Array.isArray(data.data?.messages)) {
-        const incoming: ChatMessage[] = data.data.messages;
-        setMessages((prev) => {
-          const temps = prev.filter((m) => m.id.startsWith('temp-'));
-          // Prefer server list once it's at least as complete as what we already have.
-          // Merge only to keep optimistic temps; never drop server messages mid-poll.
-          const byId = new Map<string, ChatMessage>();
-          if (incoming.length < prev.filter((m) => !m.id.startsWith('temp-')).length) {
-            for (const m of prev) {
-              if (!m.id.startsWith('temp-')) byId.set(m.id, m);
-            }
-          }
-          for (const m of incoming) {
-            byId.set(m.id, m);
-          }
-          const merged = [...byId.values()].sort(
-            (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-          );
-          const serverContents = new Set(incoming.map((m) => m.content));
-          const stillPending = temps.filter((t) => !serverContents.has(t.content));
-          const next = stillPending.length ? [...merged, ...stillPending] : merged;
-          const fp = next.map((m) => `${m.id}:${m.status}`).join('|');
-          if (fp === messagesFpRef.current) return prev;
-          messagesFpRef.current = fp;
-          return next;
-        });
+      if (messageFetchGenRef.current[conversationId] !== gen) return;
+      if (!data.success || !Array.isArray(data.data?.messages)) return;
 
+      const incoming: ChatMessage[] = data.data.messages.map((m: ChatMessage) => ({
+        ...m,
+        conversationId: m.conversationId || conversationId,
+      }));
+
+      // An empty snapshot is a blip, never the truth — don't wipe the thread.
+      if (incoming.length === 0) return;
+
+      if (activeChatRef.current?.id !== conversationId) {
+        threadCacheRef.current[conversationId] = incoming;
+        return;
+      }
+
+      setMessages((prev) => {
+        const temps = prev.filter(
+          (m) => m.id.startsWith('temp-') && (m.conversationId || conversationId) === conversationId
+        );
+        const serverTexts = new Set(incoming.map((m) => (m.content || '').trim()));
+        const pending = temps.filter((m) => !serverTexts.has((m.content || '').trim()));
+        const next = pending.length ? [...incoming, ...pending] : incoming;
+        threadCacheRef.current[conversationId] = next;
+        persistThread(conversationId, next);
+        const fp = threadFingerprint(next);
+        if (fp === messagesFpRef.current && prev.length === next.length && prev.length > 0) {
+          return prev;
+        }
+        messagesFpRef.current = fp;
+        return next;
+      });
+
+      if (activeTabRef.current === 'messenger') {
         setConversations((prev) =>
           prev.map((c) =>
             c.id === conversationId
@@ -817,24 +1039,23 @@ export default function AppHome() {
               : c
           )
         );
-
-        const reply = incoming.find(
-          (m) => !(m as ChatMessage & { isOwn?: boolean }).isOwn
-        );
-        if (reply) {
-          setReplyArrived(true);
-          setPeerTyping(false);
-          setReplySenderName(
-            (reply as ChatMessage & { senderName?: string }).senderName || null
-          );
-        }
       }
-    } catch (err) {
-      console.error('Failed to fetch messages:', err);
+
+      const reply = incoming.find(
+        (m) => !(m as ChatMessage & { isOwn?: boolean }).isOwn
+      );
+      if (reply) {
+        setReplyArrived(true);
+        setPeerTyping(false);
+        setReplySenderName(
+          (reply as ChatMessage & { senderName?: string }).senderName || null
+        );
+      }
+    } catch {
+      // Quiet during cold compile / brief disconnects.
     }
   }, [clearGuestSession]);
 
-  const fetchMessagesRef = useRef(fetchMessages);
   fetchMessagesRef.current = fetchMessages;
 
   // One-shot load when opening Messenger (not a poll).
@@ -852,13 +1073,13 @@ export default function AppHome() {
     const tick = async () => {
       if (stopped) return;
       if (
+        authReadyRef.current &&
         !authDeadRef.current &&
-        currentUserRef.current &&
-        !(typeof document !== 'undefined' && document.hidden)
+        currentUserRef.current
       ) {
         await fetchConversationsRef.current(true);
       }
-      if (!stopped) timer = setTimeout(tick, 3000);
+      if (!stopped) timer = setTimeout(tick, 2000);
     };
 
     timer = setTimeout(tick, 3000);
@@ -878,17 +1099,17 @@ export default function AppHome() {
       const chatId = activeChatRef.current?.id;
       if (
         chatId &&
+        activeTabRef.current === 'messenger' &&
+        authReadyRef.current &&
         !authDeadRef.current &&
-        currentUserRef.current &&
-        !(typeof document !== 'undefined' && document.hidden)
+        currentUserRef.current
       ) {
         await fetchMessagesRef.current(chatId);
       }
-      if (!stopped) timer = setTimeout(tick, 2500);
+      if (!stopped) timer = setTimeout(tick, 800);
     };
 
-    // Immediate fetch when activeChat changes is handled below.
-    timer = setTimeout(tick, 2500);
+    timer = setTimeout(tick, 800);
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
@@ -897,10 +1118,67 @@ export default function AppHome() {
 
   // When the open chat changes, fetch once immediately.
   useEffect(() => {
-    if (!activeChat || !currentUser || authDeadRef.current) return;
-    messagesFpRef.current = '';
+    if (!activeChat || authDeadRef.current) return;
+    if (activeTab !== 'messenger') return;
     fetchMessagesRef.current(activeChat.id);
-  }, [activeChat, currentUser]);
+  }, [activeChat, currentUser, activeTab]);
+
+  // Instant delivery when this browser's admin tab/iframe replies (and vice versa).
+  useEffect(() => {
+    const kick = () => {
+      if (!authReadyRef.current || authDeadRef.current) return;
+      if (currentUserRef.current) fetchConversationsRef.current(true);
+      const chatId = activeChatRef.current?.id;
+      if (
+        chatId &&
+        activeTabRef.current === 'messenger' &&
+        currentUserRef.current
+      ) {
+        fetchMessagesRef.current(chatId);
+      }
+    };
+
+    const onVis = () => {
+      if (document.visibilityState === 'visible') kick();
+    };
+
+    window.addEventListener('focus', kick);
+    document.addEventListener('visibilitychange', onVis);
+    const unsub = subscribeChatSync((event) => {
+      if (authDeadRef.current) return;
+      fetchConversationsRef.current(true);
+      const viewing =
+        activeTabRef.current === 'messenger' &&
+        activeChatRef.current?.id === event.conversationId;
+      if (viewing) {
+        fetchMessagesRef.current(event.conversationId);
+      } else if (event.source === 'staff') {
+        setConversations((prev) =>
+          sortConversations(
+            prev.map((c) =>
+              c.id === event.conversationId
+                ? {
+                    ...c,
+                    lastMessageAt: new Date().toISOString(),
+                    lastMessagePreview: event.preview || c.lastMessagePreview,
+                    participant: {
+                      ...c.participant,
+                      unreadCount: (c.participant.unreadCount || 0) + 1,
+                    },
+                  }
+                : c
+            )
+          )
+        );
+      }
+    });
+
+    return () => {
+      window.removeEventListener('focus', kick);
+      document.removeEventListener('visibilitychange', onVis);
+      unsub();
+    };
+  }, [sortConversations]);
 
   useEffect(() => {
     if (!stickToBottomRef.current) return;
@@ -1053,7 +1331,7 @@ export default function AppHome() {
     setShowQuickMatchModal(true);
   };
 
-  /** Landing funnel: guest account + open chat with the matched profile. */
+  /** Landing funnel: open the chat shell instantly, then bind the guest session. */
   const handleMatchSayHi = async (
     profile: FunnelMatch,
     visitorName: string,
@@ -1061,200 +1339,193 @@ export default function AppHome() {
     visitorLocation?: string,
     prefs?: { lookingForGender: 'female' | 'male' }
   ) => {
-    let storedUtm: any = null;
-    try {
-      const raw = sessionStorage.getItem('heartlink_utm') || localStorage.getItem('heartlink_utm');
-      if (raw) storedUtm = JSON.parse(raw);
-    } catch {
-      // ignore
-    }
+    const pendingId = `pending-${profile.userId}`;
+    const optimistic: ConversationItem = {
+      id: pendingId,
+      type: 'assisted',
+      status: 'active',
+      lastMessageAt: new Date().toISOString(),
+      lastMessagePreview: opener?.trim() || null,
+      participant: {
+        userId: profile.userId,
+        displayName: profile.displayName,
+        photo: profile.photo || profile.photos?.[0]?.filePath || null,
+        gender: profile.gender || null,
+        unreadCount: 0,
+        lastActiveAt: new Date().toISOString(),
+      },
+    };
 
-    const ageGuess = adParams ? inferVisitorAge(adParams) : null;
-    const lookingForGender =
-      prefs?.lookingForGender ||
-      (adParams?.gender === 'male' || adParams?.gender === 'female'
-        ? adParams.gender
-        : 'female');
-    // Soft inference for CRM only — men usually look for women and vice versa.
-    const visitorGender = lookingForGender === 'female' ? 'male' : 'female';
-
-    const savedGuestName =
-      typeof window !== 'undefined'
-        ? localStorage.getItem('heartlink_guest_name')
-        : null;
-
-    const finalVisitorName =
-      visitorName &&
-      visitorName !== 'Visitor' &&
-      visitorName !== 'Guest Traveler'
-        ? visitorName
-        : currentUser?.profile?.displayName &&
-          currentUser.profile.displayName !== 'Visitor' &&
-          currentUser.profile.displayName !== 'Guest Traveler'
-        ? currentUser.profile.displayName
-        : savedGuestName &&
-          savedGuestName !== 'Visitor' &&
-          savedGuestName !== 'Guest Traveler'
-        ? savedGuestName
-        : 'Visitor';
-
-    const hasName = Boolean(finalVisitorName && finalVisitorName !== 'Visitor');
-
-    const res = await fetch('/api/auth/guest', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: finalVisitorName,
-        age: ageGuess || 28,
-        gender: visitorGender,
-        lookingFor: 'travel_partner',
-        preferredGender: lookingForGender,
-        targetUserId: profile.userId,
-        utm: storedUtm,
-        deviceToken: getDeviceToken(),
-        device: collectDeviceSnapshot(),
-        adCity: visitorLocation || adParams?.city || undefined,
-        adCountry: adParams?.country || undefined,
-      }),
-    });
-
-    const data = await res.json();
-    if (!data.success) {
-      throw new Error(data.error?.message || 'Could not start chat');
-    }
-
-    await fetchCurrentUser();
-    const convs = await fetchConversations();
-
-    if (data.data?.conversationId) {
-      const found = Array.isArray(convs)
-        ? convs.find((c: any) => c.id === data.data.conversationId)
-        : null;
-      const convItem: ConversationItem = found || {
-        id: data.data.conversationId,
-        type: 'assisted',
-        status: 'active',
-        lastMessageAt: new Date().toISOString(),
-        lastMessagePreview: null,
-        participant: {
-          userId: profile.userId,
-          displayName: profile.displayName,
-          photo: profile.photo || profile.photos?.[0]?.filePath || null,
-          gender: profile.gender || null,
-          unreadCount: 0,
-          lastActiveAt: new Date().toISOString(),
-        },
-      };
-      handleSwitchTab('messenger');
-      handleSelectChat(convItem);
-
-      if (hasName) {
-        const firstLine = opener?.trim();
-        if (firstLine) {
-          try {
-            const sendRes = await fetch(
-              `/api/conversations/${data.data.conversationId}/messages`,
-              {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content: firstLine, contentType: 'text' }),
-              }
-            );
-            const sendData = await sendRes.json();
-            if (sendData.success && sendData.data?.message) {
-              setMessages([sendData.data.message]);
-              bumpConversation(data.data.conversationId, firstLine);
-              setFirstMessageSent(true);
-              triggerPeerTyping(profile.displayName);
-              try {
-                localStorage.setItem('heartlink_has_chatted', 'true');
-                localStorage.setItem('heartlink_last_conv_id', data.data.conversationId);
-              } catch {}
-            }
-          } catch {
-            setChatInput(firstLine);
-          }
-          setActionNotice(`Message sent to ${profile.displayName}`);
-        } else {
-          setActionNotice(`Connected with ${profile.displayName}. Say hi.`);
-        }
-      } else {
-        // Visitor has no name yet; remember any opener they tapped so it will be included with their name intro!
-        if (opener?.trim()) {
-          setPendingChatOpener(opener.trim());
-        }
-        setActionNotice(`Connected with ${profile.displayName}. Say hi.`);
+    persistNavTab('messenger');
+    persistChatOpen(true);
+    setActiveTab('messenger');
+    setActiveChat(optimistic);
+    setConversations((prev) => {
+      if (prev.some((c) => c.participant.userId === profile.userId || c.id === pendingId)) {
+        return prev;
       }
-      setTimeout(() => setActionNotice(null), 4000);
+      return [optimistic, ...prev];
+    });
+    if (opener?.trim()) setPendingChatOpener(opener.trim());
+    setInlinePhoneError('');
+    if (visitorName && visitorName !== 'Visitor' && visitorName !== 'Guest Traveler') {
+      setInlineNameInput(visitorName);
+    } else if (storedGuestName && storedGuestName !== 'Visitor' && storedGuestName !== 'Guest Traveler') {
+      setInlineNameInput(storedGuestName);
+    }
+
+    // Only establish backend conversation if user is already logged in / verified.
+    // Anonymous visitors will create their profile only when they submit Name + Phone.
+    if (currentUserRef.current?.id && currentUserRef.current?.isVerifiedLead) {
+      try {
+        let storedUtm: any = null;
+        try {
+          const raw = sessionStorage.getItem('heartlink_utm') || localStorage.getItem('heartlink_utm');
+          if (raw) storedUtm = JSON.parse(raw);
+        } catch {}
+
+        const res = await fetch('/api/auth/guest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            name: currentUserRef.current.profile?.displayName || 'Visitor',
+            targetUserId: profile.userId,
+            utm: storedUtm,
+            deviceToken: getDeviceToken(),
+            device: collectDeviceSnapshot(),
+            adCity: visitorLocation || adParams?.city || undefined,
+            adCountry: adParams?.country || undefined,
+          }),
+        });
+
+        const data = await res.json();
+        if (data.success && data.data?.conversationId) {
+          const realId = data.data.conversationId as string;
+          const convItem: ConversationItem = { ...optimistic, id: realId };
+          if (threadCacheRef.current[pendingId]) {
+            threadCacheRef.current[realId] = threadCacheRef.current[pendingId];
+            delete threadCacheRef.current[pendingId];
+          }
+          setActiveChat((prev) =>
+            prev && (prev.id === pendingId || prev.id === realId) ? convItem : prev
+          );
+          setConversations((prev) => {
+            const mapped = prev.map((c) => (c.id === pendingId ? convItem : c));
+            if (!mapped.some((c) => c.id === realId)) return [convItem, ...mapped];
+            return mapped.filter((c, i, arr) => arr.findIndex((x) => x.id === c.id) === i);
+          });
+          persistChatMeta(convItem);
+        }
+      } catch {
+        // Fallback gracefully
+      }
     }
   };
 
-  // Submit inline name from chat view
-  const handleInlineNameSubmit = async (e?: React.FormEvent) => {
+  // Name + phone in one step: creates the account, lead, and first message.
+  const handleInboxRegisterSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const cleanName = inlineNameInput.trim();
-    if (!cleanName || !activeChat || submittingInlineName) return;
+    if (!activeChat || submittingInlinePhone) return;
 
-    setSubmittingInlineName(true);
+    const cleanName = inlineNameInput.trim();
+    const cleanPhone = inlinePhoneInput.trim();
+    if (!cleanName || cleanName.length < 2 || !cleanPhone) return;
+
+    const conversationId = activeChat.id;
+    const targetUserId = activeChat.participant?.userId;
+    const firstMessage = pendingChatOpener?.trim() || `Hi, I'm ${cleanName}!`;
+    const tempId = `temp-${Date.now()}`;
+
+    setSubmittingInlinePhone(true);
+    setInlinePhoneError('');
+    setChatUnlocked(true);
+    setChatInput('');
+    setMessages((prev) => {
+      const next = [
+        ...prev,
+        {
+          id: tempId,
+          conversationId,
+          content: firstMessage,
+          contentType: 'text',
+          mediaUrl: null,
+          status: 'sent',
+          isAssisted: false,
+          isOwn: true,
+          createdAt: new Date().toISOString(),
+          senderUserId: currentUser?.id || null,
+        },
+      ];
+      threadCacheRef.current[conversationId] = next;
+      persistThread(conversationId, next);
+      return next;
+    });
+    bumpConversation(conversationId, firstMessage);
+    stickToBottomRef.current = true;
+
     try {
       try {
         localStorage.setItem('heartlink_guest_name', cleanName);
+        setStoredGuestName(cleanName);
       } catch {}
 
-      setCurrentUser((prev: any) =>
-        prev
-          ? {
-              ...prev,
-              profile: {
-                ...(prev.profile || {}),
-                displayName: cleanName,
-              },
-            }
-          : prev
-      );
-
-      const res = await fetch('/api/profiles', {
-        method: 'PATCH',
+      const res = await fetch('/api/auth/phone', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ displayName: cleanName }),
+        credentials: 'include',
+        body: JSON.stringify({
+          name: cleanName,
+          phone: cleanPhone,
+          conversationId,
+          targetUserId,
+          firstMessage,
+          deviceToken: getDeviceToken(),
+          device: collectDeviceSnapshot(),
+        }),
       });
       const data = await res.json();
       if (!data.success) {
-        throw new Error(data.error?.message || 'Could not save name');
+        setChatUnlocked(false);
+        setMessages((prev) => prev.filter((m) => m.id !== tempId));
+        setInlinePhoneError(data.error?.message || 'Could not start chat with this number.');
+        return;
       }
 
-      await fetchCurrentUser();
-
-      // Intro message: simple and friendly as requested by user ("hi i am alvi" or with opener)
-      const introContent = pendingChatOpener
-        ? `Hi, I'm ${cleanName}! ${pendingChatOpener}`
-        : `Hi, I'm ${cleanName}! Nice to connect with you.`;
-
-      const sendRes = await fetch(`/api/conversations/${activeChat.id}/messages`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: introContent, contentType: 'text' }),
-      });
-      const sendData = await sendRes.json();
-      if (sendData.success && sendData.data?.message) {
-        setMessages((prev) => [...prev, sendData.data.message]);
-        bumpConversation(activeChat.id, introContent);
-        setFirstMessageSent(true);
-        triggerPeerTyping(activeChat.participant.displayName);
-        try {
-          localStorage.setItem('heartlink_has_chatted', 'true');
-          localStorage.setItem('heartlink_last_conv_id', activeChat.id);
-        } catch {}
-      }
-
+      authDeadRef.current = false;
+      authReadyRef.current = true;
+      trackPixel('Lead', { method: 'phone' });
       setPendingChatOpener(null);
-      setInlineNameInput('');
-    } catch (err: any) {
-      console.error('Failed to set name and send intro:', err);
-      setActionNotice(err.message || 'Could not save name');
-      setTimeout(() => setActionNotice(null), 3000);
+
+      const nextId = data.data?.conversationId || conversationId;
+      const sent = data.data?.message;
+      if (sent) {
+        setMessages((prev) => {
+          const next = [...prev.filter((m) => m.id !== tempId && m.id !== sent.id), sent];
+          threadCacheRef.current[nextId] = next;
+          messagesFpRef.current = threadFingerprint(next);
+          return next;
+        });
+        bumpConversation(nextId, firstMessage);
+      }
+      setFirstMessageSent(true);
+      triggerPeerTyping(activeChat.participant.displayName);
+      publishChatSync({
+        type: 'conversation_updated',
+        conversationId: nextId,
+        preview: firstMessage,
+        source: 'customer',
+      });
+
+      void fetchCurrentUser();
+      void fetchConversations(true);
+      void fetchMessagesRef.current(nextId);
+    } catch {
+      setChatUnlocked(false);
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      setInlinePhoneError('Connection error. Please try again.');
     } finally {
-      setSubmittingInlineName(false);
+      setSubmittingInlinePhone(false);
     }
   };
 
@@ -1281,6 +1552,7 @@ export default function AppHome() {
       const res = await fetch('/api/auth/guest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           name: quickMatchName.trim() || 'Visitor',
           age: quickMatchAge ? parseInt(quickMatchAge, 10) : undefined,
@@ -1299,6 +1571,8 @@ export default function AppHome() {
       const data = await res.json();
       if (data.success) {
         setShowQuickMatchModal(false);
+        authDeadRef.current = false;
+        authReadyRef.current = true;
         await fetchCurrentUser();
         trackPixel('Contact', { content_name: quickMatchTargetProfile?.displayName });
         const convs = await fetchConversations();
@@ -1370,12 +1644,19 @@ export default function AppHome() {
           const sendRes = await fetch(`/api/conversations/${activeChat.id}/messages`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
             body: JSON.stringify({ content: pendingVerificationMessage, contentType: 'text' }),
           });
           const sendData = await sendRes.json();
           if (sendData.success && sendData.data?.message) {
             setMessages((prev) => [...prev, sendData.data.message]);
             fetchConversations();
+            publishChatSync({
+              type: 'conversation_updated',
+              conversationId: activeChat.id,
+              preview: pendingVerificationMessage,
+              source: 'customer',
+            });
           }
           setPendingVerificationMessage(null);
         }
@@ -1399,16 +1680,24 @@ export default function AppHome() {
       const res = await fetch('/api/auth/contact-login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contact: contactLoginInput.trim() }),
+        credentials: 'include',
+        body: JSON.stringify({
+          contact: contactLoginInput.trim(),
+          deviceToken: getDeviceToken(),
+          device: collectDeviceSnapshot(),
+        }),
       });
       const data = await res.json();
       if (data.success) {
+        authDeadRef.current = false;
+        authReadyRef.current = true;
         setShowAuthModal(false);
         setContactLoginInput('');
         await fetchCurrentUser();
         await fetchConversations();
         await fetchProfiles();
-        setActionNotice('Welcome back! Your chat history has been restored 🎉');
+        handleSwitchTab('messenger');
+        setActionNotice('Welcome back — your chats are restored.');
         setTimeout(() => setActionNotice(null), 3500);
       } else {
         setAuthError(data.error?.message || 'No account found with this contact');
@@ -1427,6 +1716,7 @@ export default function AppHome() {
   ) => {
     if (e) e.preventDefault();
     if (!activeChat || sendingMessage || uploadingMedia) return;
+    if (activeChat.id.startsWith('pending-')) return;
 
     const content = chatInput.trim();
     if (!content && !mediaData?.mediaUrl) return;
@@ -1443,21 +1733,25 @@ export default function AppHome() {
     }
     setSendingMessage(true);
 
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: tempId,
-        conversationId,
-        content: effectiveContent,
-        contentType: effectiveContentType,
-        mediaUrl: effectiveMediaUrl,
-        status: 'sent',
-        isAssisted: false,
-        isOwn: true,
-        createdAt: new Date().toISOString(),
-        senderUserId: currentUser?.id || null,
-      },
-    ]);
+    setMessages((prev) => {
+      const next = [
+        ...prev,
+        {
+          id: tempId,
+          conversationId,
+          content: effectiveContent,
+          contentType: effectiveContentType,
+          mediaUrl: effectiveMediaUrl,
+          status: 'sent',
+          isAssisted: false,
+          isOwn: true,
+          createdAt: new Date().toISOString(),
+          senderUserId: currentUser?.id || null,
+        },
+      ];
+      threadCacheRef.current[conversationId] = next;
+      return next;
+    });
     bumpConversation(conversationId, effectiveContent);
     stickToBottomRef.current = true;
 
@@ -1465,6 +1759,8 @@ export default function AppHome() {
       const res = await fetch(`/api/conversations/${conversationId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        cache: 'no-store',
         body: JSON.stringify({
           content: effectiveContent,
           contentType: effectiveContentType,
@@ -1473,12 +1769,23 @@ export default function AppHome() {
       });
       const data = await res.json();
       if (data.success && data.data?.message) {
-        setMessages((prev) => [
-          ...prev.filter((m) => m.id !== tempId),
-          data.data.message,
-        ]);
+        setMessages((prev) => {
+          const next = [
+            ...prev.filter((m) => m.id !== tempId),
+            data.data.message,
+          ];
+          threadCacheRef.current[conversationId] = next;
+          messagesFpRef.current = threadFingerprint(next);
+          return next;
+        });
         fetchConversations(true);
         setFirstMessageSent(true);
+        publishChatSync({
+          type: 'conversation_updated',
+          conversationId,
+          preview: effectiveContent,
+          source: 'customer',
+        });
         try {
           localStorage.setItem('heartlink_has_chatted', 'true');
           localStorage.setItem('heartlink_last_conv_id', conversationId);
@@ -1488,7 +1795,11 @@ export default function AppHome() {
           triggerPeerTyping(activeChat.participant.displayName);
         }
       } else if (data.error?.code === 'VERIFICATION_REQUIRED') {
-        setMessages((prev) => prev.filter((m) => m.id !== tempId));
+        setMessages((prev) => {
+          const next = prev.filter((m) => m.id !== tempId);
+          threadCacheRef.current[conversationId] = next;
+          return next;
+        });
         setPendingVerificationMessage(effectiveContent);
         setShowVerificationModal(true);
       } else {
@@ -1633,88 +1944,6 @@ export default function AppHome() {
       setTimeout(() => setActionNotice(null), 2500);
     }
   };
-  const handleAuthSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError('');
-    setAuthSubmitting(true);
-
-    let storedUtm: any = null;
-    try {
-      const raw = sessionStorage.getItem('heartlink_utm') || localStorage.getItem('heartlink_utm');
-      if (raw) storedUtm = JSON.parse(raw);
-    } catch {
-      // ignore
-    }
-
-    const endpoint = authMode === 'signup' ? '/api/auth/signup' : '/api/auth/login';
-    const payload =
-      authMode === 'signup'
-        ? {
-            email: authEmail,
-            password: authPassword,
-            displayName: authName,
-            gender: authGender,
-            country: authCountry || 'United States',
-            utm: storedUtm,
-          }
-        : {
-            email: authEmail,
-            password: authPassword,
-          };
-
-    try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setShowAuthModal(false);
-        setAuthEmail('');
-        setAuthPassword('');
-        await fetchCurrentUser();
-        await fetchProfiles();
-
-        if (pendingIntent) {
-          await executePendingIntent(pendingIntent);
-        }
-      } else {
-        setAuthError(data.error?.message || 'Authentication failed');
-      }
-    } catch {
-      setAuthError('Connection error. Please try again.');
-    } finally {
-      setAuthSubmitting(false);
-    }
-  };
-
-  // Quick Demo Login (Daniel, Elena, Aisha) — development only
-  const handleQuickLogin = async (email: string) => {
-    if (process.env.NODE_ENV === 'production') return;
-    setAuthSubmitting(true);
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password: 'User@123456' }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setShowAuthModal(false);
-        await fetchCurrentUser();
-        await fetchProfiles();
-
-        if (pendingIntent) {
-          await executePendingIntent(pendingIntent);
-        }
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setAuthSubmitting(false);
-    }
-  };
 
   // Toggle Privacy: Hide contact number from public view
   const handleToggleHideContact = async (checked: boolean) => {
@@ -1726,7 +1955,9 @@ export default function AppHome() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ hideContactNumber: checked }),
       });
-      setActionNotice(checked ? 'Contact number hidden from public 🔒' : 'Contact number visible on profile 👁');
+      setActionNotice(
+        checked ? 'Last 4 digits hidden on your profile 🔒' : 'Full number visible on your profile 👁'
+      );
       setTimeout(() => setActionNotice(null), 3000);
     } catch {
       // ignore
@@ -1781,8 +2012,12 @@ export default function AppHome() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           bio: editBio,
-          lookingFor: editLookingFor,
+          lookingFor: editLookingFor || null,
           interests: interestsArray,
+          gender: editGender || null,
+          age: editAge ? parseInt(editAge, 10) : null,
+          country: editCountry || null,
+          city: editCity || null,
           hideContactNumber,
         }),
       });
@@ -1801,7 +2036,21 @@ export default function AppHome() {
   };
 
   // Logout handler
+  const handleRefreshThread = async () => {
+    if (!activeChatRef.current || refreshingThread) return;
+    setRefreshingThread(true);
+    try {
+      await Promise.all([
+        fetchMessagesRef.current(activeChatRef.current.id),
+        fetchConversationsRef.current(true),
+      ]);
+    } finally {
+      setRefreshingThread(false);
+    }
+  };
+
   const handleLogout = async () => {
+    markExplicitLogout();
     await fetch('/api/auth/logout', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1816,8 +2065,28 @@ export default function AppHome() {
     0
   );
 
+  const handlePullRefresh = useCallback(async () => {
+    try {
+      if (activeTab === 'discover') {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('cityhost:refresh-pool'));
+        }
+        await fetchCurrentUser();
+      } else if (activeTab === 'messenger') {
+        await fetchConversations();
+      } else if (activeTab === 'profile') {
+        await fetchCurrentUser();
+      }
+    } catch {
+      // Ignore refresh errors
+    }
+  }, [activeTab, fetchCurrentUser, fetchConversations]);
+
   return (
-    <div className="h-dvh flex flex-col overflow-hidden bg-surface-950 text-white font-sans selection:bg-brand-500 selection:text-white">
+    <PullToRefresh
+      onRefresh={handlePullRefresh}
+      className="h-dvh flex flex-col overflow-hidden bg-surface-950 text-white font-sans selection:bg-brand-500 selection:text-white overscroll-none"
+    >
       {/* Top Header — hide on mobile when inside an open chat */}
       <header
         className={`shrink-0 z-40 bg-surface-950 border-b border-surface-800 px-4 py-2.5 pt-[max(0.625rem,env(safe-area-inset-top))] ${
@@ -1829,7 +2098,7 @@ export default function AppHome() {
             <div className="w-8 h-8 rounded-xl bg-white/10 flex items-center justify-center">
               <Heart className="w-4 h-4 text-white fill-white" />
             </div>
-            <h1 className="text-lg font-bold tracking-tight text-white">Heartlink</h1>
+            <h1 className="text-lg font-bold tracking-tight text-white">City Host</h1>
           </div>
 
           {/* Desktop Navigation Links */}
@@ -1918,7 +2187,7 @@ export default function AppHome() {
                 onClick={() => handleOpenAuthModal('contact_login')}
                 className="btn-ghost py-1.5 px-3 text-xs font-semibold rounded-lg cursor-pointer"
               >
-                Already chatting?
+                Login
               </button>
             )}
           </div>
@@ -1946,7 +2215,7 @@ export default function AppHome() {
         {/* ============================================================ */}
         {/* AREA 1: DISCOVERY & MATCHING                                  */}
         {/* ============================================================ */}
-        {activeTab === 'discover' && (
+        {navReady && activeTab === 'discover' && (
           <MatchFunnel onSayHi={handleMatchSayHi} currentUser={currentUser} />
         )}
 
@@ -2029,10 +2298,9 @@ export default function AppHome() {
                     className="input-field py-2 text-xs"
                   >
                     <option value="">Anyone visiting</option>
-                    <option value="travel_partner">Travel companion</option>
+                    <option value="local_guide">Find local guide</option>
+                    <option value="travel_partner">Find travel partner</option>
                     <option value="friendship">Friendship</option>
-                    <option value="dating">Dating</option>
-                    <option value="relationship">Relationship</option>
                   </select>
                 </div>
                 <div className="sm:col-span-2 flex justify-end gap-2 pt-1">
@@ -2113,9 +2381,14 @@ export default function AppHome() {
                         {/* Badges on photo */}
                         <div className="absolute top-3 left-3 right-3 flex items-start justify-between gap-2">
                           <div className="flex flex-wrap gap-1.5">
+                            {profile.lookingFor === 'local_guide' && (
+                              <span className="badge bg-surface-900/80 text-emerald-300 border border-emerald-500/30 text-[10px] px-2 py-0.5 backdrop-blur-md">
+                                Find local guide
+                              </span>
+                            )}
                             {profile.lookingFor === 'travel_partner' && (
                               <span className="badge bg-surface-900/80 text-brand-300 border border-brand-500/30 text-[10px] px-2 py-0.5 backdrop-blur-md">
-                                Travel companion
+                                Find travel partner
                               </span>
                             )}
                           </div>
@@ -2207,10 +2480,10 @@ export default function AppHome() {
                 <Link href="/legal/terms#safety" className="hover:text-white transition">Safety Guidelines</Link>
               </div>
               <p className="text-[11px] text-surface-500 max-w-md mx-auto leading-relaxed">
-                Heartlink is a cultural social discovery and travel-companion platform connecting travelers visiting the same destinations. Strictly 18+. We never post without permission.
+                City Host is a local meetup and travel-companion platform. Chat stays on City Host — add it to your home screen so replies are waiting when you come back.
               </p>
               <p className="text-[10px] text-surface-600 font-medium">
-                © {new Date().getFullYear()} Heartlink Travel. All rights reserved.
+                © {new Date().getFullYear()} City Host. All rights reserved.
               </p>
             </footer>
           </div>
@@ -2219,7 +2492,7 @@ export default function AppHome() {
         {/* ============================================================ */}
         {/* AREA 2: MESSENGER & CHAT (PREMIUM MOBILE-FIRST POLISH)       */}
         {/* ============================================================ */}
-        {activeTab === 'messenger' && (
+        {navReady && activeTab === 'messenger' && (
           <div className="h-full flex flex-col md:flex-row bg-surface-950 md:border-x border-surface-800">
             {/* Conversation List Sidebar */}
             <div
@@ -2231,12 +2504,14 @@ export default function AppHome() {
               <div className="px-4 py-3 border-b border-surface-800 flex items-center justify-between shrink-0">
                 <h2 className="font-bold text-base text-white tracking-tight">Chats</h2>
                 <button
+                  type="button"
                   onClick={() => fetchConversations()}
-                  className="p-2 rounded-xl hover:bg-surface-800 text-surface-400 hover:text-white transition cursor-pointer"
-                  title="Refresh"
-                  aria-label="Refresh conversations"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-surface-800 hover:bg-surface-700 text-surface-200 hover:text-white border border-surface-700/80 transition cursor-pointer"
+                  title="Refresh chats"
+                  aria-label="Refresh chats"
                 >
                   <RefreshCw className={`w-4 h-4 ${loadingConversations ? 'animate-spin text-emerald-400' : ''}`} />
+                  <span className="text-[11px] font-semibold">Refresh</span>
                 </button>
               </div>
 
@@ -2283,15 +2558,15 @@ export default function AppHome() {
                     <div className="w-12 h-12 rounded-2xl bg-surface-800 border border-surface-700/60 flex items-center justify-center mb-3 text-brand-400">
                       <UserIcon className="w-6 h-6" />
                     </div>
-                    <h3 className="text-sm font-bold text-white mb-1">Sign in to view messages</h3>
+                    <h3 className="text-sm font-bold text-white mb-1">Log in to view messages</h3>
                     <p className="text-xs text-surface-400 mb-4 max-w-xs">
-                      Sign in or create an account to start chatting with your matches.
+                      Use the mobile number from your chat. No password.
                     </p>
                     <button
                       onClick={() => setShowAuthModal(true)}
                       className="btn-primary py-2 px-5 text-xs font-semibold rounded-xl"
                     >
-                      Sign In
+                      Login
                     </button>
                   </div>
                 ) : loadingConversations && conversations.length === 0 ? (
@@ -2454,8 +2729,18 @@ export default function AppHome() {
                       </div>
                     </div>
 
-                    {/* Header Actions (Block User) */}
-                    <div className="flex items-center gap-1.5 shrink-0">
+                    {/* Header Actions */}
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={handleRefreshThread}
+                        disabled={refreshingThread || activeChat.id.startsWith('pending-')}
+                        className="p-2 text-surface-300 hover:text-white hover:bg-surface-800 rounded-xl transition cursor-pointer min-w-[38px] min-h-[38px] flex items-center justify-center disabled:opacity-50"
+                        title="Refresh messages"
+                        aria-label="Refresh messages"
+                      >
+                        <RefreshCw className={`w-5 h-5 ${refreshingThread ? 'animate-spin text-emerald-400' : ''}`} />
+                      </button>
                       {blockedUserIds.includes(activeChat.participant.userId) ? (
                         <button
                           onClick={() => handleUnblockUser(activeChat.participant.userId)}
@@ -2510,14 +2795,14 @@ export default function AppHome() {
                       </div>
                     ) : (
                       messages.map((msg, idx) => {
-                        const isMe =
-                          msg.isOwn !== undefined
-                            ? msg.isOwn
-                            : Boolean(
-                                (msg.senderUserId && currentUser?.id && msg.senderUserId === currentUser.id) ||
-                                (msg.senderId && currentUser?.id && msg.senderId === currentUser.id) ||
-                                msg.id.startsWith('temp-')
-                              );
+                        const isMe = Boolean(
+                          msg.id.startsWith('temp-') ||
+                            msg.isOwn === true ||
+                            (!msg.senderStaffId &&
+                              Boolean(msg.senderUserId) &&
+                              Boolean(currentUser?.id) &&
+                              msg.senderUserId === currentUser.id)
+                        );
                         const prevMsg = idx > 0 ? messages[idx - 1] : null;
                         const showDay = !prevMsg || !sameCalendarDay(prevMsg.createdAt, msg.createdAt);
                         const pending = msg.id.startsWith('temp-');
@@ -2596,65 +2881,90 @@ export default function AppHome() {
                         </button>
                       )}
                     </div>
-                  ) : !Boolean(
-                      (currentUser?.profile?.displayName &&
-                        currentUser.profile.displayName !== 'Visitor' &&
-                        currentUser.profile.displayName !== 'Guest Traveler') ||
-                      (typeof window !== 'undefined' &&
-                        localStorage.getItem('heartlink_guest_name') &&
-                        localStorage.getItem('heartlink_guest_name') !== 'Visitor' &&
-                        localStorage.getItem('heartlink_guest_name') !== 'Guest Traveler')
+                  ) : !(
+                      chatUnlocked ||
+                      currentUser?.isVerifiedLead ||
+                      currentUser?.phone
                     ) ? (
-                    /* Inline Name Prompt inside chat for new visitors */
-                    <div className="p-3 sm:p-4 border-t border-brand-500/30 bg-gradient-to-b from-surface-900 via-surface-900/98 to-surface-950 sticky bottom-0 z-20 shadow-2xl backdrop-blur-xl">
-                      <div className="max-w-xl mx-auto space-y-2.5">
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-7 h-7 rounded-full bg-brand-500/20 border border-brand-500/30 flex items-center justify-center text-brand-300 shrink-0">
-                            <Sparkles className="w-3.5 h-3.5" />
-                          </div>
-                          <div className="min-w-0">
-                            <h4 className="text-xs sm:text-sm font-bold text-white truncate">
-                              What should {activeChat.participant.displayName} call you?
-                            </h4>
-                            <p className="text-[11px] text-surface-400">
-                              Enter your name to connect directly
-                            </p>
-                          </div>
+                    <div className="p-4 sm:p-5 border-t border-surface-800/80 bg-surface-950/95 sticky bottom-0 z-20 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl backdrop-blur-xl">
+                      <div className="max-w-md mx-auto">
+                        <div className="flex items-center justify-center gap-2 mb-1.5">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                          <p className="text-center text-sm font-bold text-white leading-snug">
+                            Start chat with {activeChat.participant.displayName}
+                          </p>
                         </div>
+                        <p className="text-center text-[11px] text-surface-400 mb-3.5">
+                          Enter your nickname & number to connect directly. No password needed.
+                        </p>
 
-                        <form
-                          onSubmit={handleInlineNameSubmit}
-                          className="flex items-center gap-2"
-                        >
-                          <div className="flex-1 min-h-[42px] bg-surface-800 border border-surface-700/80 focus-within:border-brand-500 rounded-2xl px-3.5 py-1 transition-colors flex items-center">
+                        {inlinePhoneError && (
+                          <div className="mb-3 p-2.5 rounded-xl bg-red-500/10 border border-red-500/25 text-red-300 text-[11px] flex items-start gap-1.5">
+                            <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                            <span>{inlinePhoneError}</span>
+                          </div>
+                        )}
+
+                        <form onSubmit={handleInboxRegisterSubmit} className="space-y-2.5">
+                          <div>
                             <input
                               type="text"
+                              autoComplete="name"
                               value={inlineNameInput}
-                              onChange={(e) => setInlineNameInput(e.target.value)}
-                              placeholder="Your first name (e.g. Alvi, Alex)"
+                              onChange={(e) => {
+                                setInlineNameInput(e.target.value);
+                                if (inlinePhoneError) setInlinePhoneError('');
+                              }}
+                              placeholder="Your name or nickname"
                               autoFocus
-                              disabled={submittingInlineName}
-                              className="w-full bg-transparent text-sm text-white placeholder-surface-500 focus:outline-none py-1 font-medium"
+                              disabled={submittingInlinePhone}
+                              className="w-full h-11 bg-surface-800/80 border border-surface-700/80 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20 rounded-xl px-3.5 text-xs sm:text-sm text-white placeholder:text-surface-500 focus:outline-none transition"
                             />
                           </div>
-
+                          <div>
+                            <input
+                              type="tel"
+                              inputMode="tel"
+                              autoComplete="tel"
+                              value={inlinePhoneInput}
+                              onChange={(e) => {
+                                setInlinePhoneInput(e.target.value);
+                                if (inlinePhoneError) setInlinePhoneError('');
+                              }}
+                              placeholder="Mobile or WhatsApp number"
+                              disabled={submittingInlinePhone}
+                              className="w-full h-11 bg-surface-800/80 border border-surface-700/80 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20 rounded-xl px-3.5 text-xs sm:text-sm text-white placeholder:text-surface-500 focus:outline-none transition"
+                            />
+                          </div>
                           <button
                             type="submit"
-                            disabled={!inlineNameInput.trim() || submittingInlineName}
-                            className="h-10 px-4 sm:px-5 rounded-2xl bg-gradient-to-r from-brand-500 via-rose-500 to-pink-500 hover:from-brand-600 hover:to-pink-600 text-white text-xs sm:text-sm font-bold flex items-center justify-center gap-1.5 shadow-lg shadow-brand-500/25 active:scale-98 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                            disabled={
+                              inlineNameInput.trim().length < 2 ||
+                              !inlinePhoneInput.trim() ||
+                              submittingInlinePhone
+                            }
+                            className="w-full h-11 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-[0.99] text-surface-950 text-xs sm:text-sm font-bold shadow-lg shadow-emerald-500/25 transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-35 disabled:shadow-none disabled:cursor-not-allowed"
                           >
-                            {submittingInlineName ? (
+                            {submittingInlinePhone ? (
                               <>
-                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                <span>Connecting…</span>
+                                <RefreshCw className="w-4 h-4 animate-spin text-surface-950" />
+                                <span>Connecting & starting chat…</span>
                               </>
                             ) : (
                               <>
-                                <span>Say Hi 👋</span>
+                                <Send className="w-4 h-4 text-surface-950" />
+                                <span>Start Chat</span>
                               </>
                             )}
                           </button>
                         </form>
+                      </div>
+                    </div>
+                  ) : activeChat.id.startsWith('pending-') ? (
+                    <div className="p-4 sm:p-5 border-t border-surface-800/80 bg-surface-950/95 sticky bottom-0 z-20 pb-[max(1rem,env(safe-area-inset-bottom))]">
+                      <div className="flex items-center justify-center gap-2 text-xs text-surface-300">
+                        <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
+                        <span>Opening chat…</span>
                       </div>
                     </div>
                   ) : (
@@ -2750,20 +3060,20 @@ export default function AppHome() {
         {/* ============================================================ */}
         {/* AREA 3: PROFILE & SETTINGS                                   */}
         {/* ============================================================ */}
-        {activeTab === 'profile' && (
+        {navReady && activeTab === 'profile' && (
           <div className="pb-2">
             {!currentUser ? (
               <div className="py-16 text-center px-4">
                 <UserIcon className="w-10 h-10 text-surface-500 mx-auto mb-3" />
-                <h3 className="text-base font-bold text-white mb-1">Sign in</h3>
+                <h3 className="text-base font-bold text-white mb-1">Log in</h3>
                 <p className="text-xs text-surface-400 max-w-sm mx-auto mb-4">
-                  Continue chatting and manage your account.
+                  Use the mobile number from your chat.
                 </p>
                 <button
                   onClick={() => setShowAuthModal(true)}
                   className="btn-primary py-2.5 px-6 text-xs font-semibold"
                 >
-                  Sign In
+                  Login
                 </button>
               </div>
             ) : (
@@ -2771,14 +3081,17 @@ export default function AppHome() {
                 {/* Profile Card Summary */}
                 <div className="rounded-2xl border border-surface-800 bg-surface-900/50 p-5 flex flex-col items-center text-center">
                   <div className="relative w-24 h-24 rounded-full overflow-hidden mb-3 bg-surface-800 group ring-2 ring-brand-500/30">
-                    <img
-                      src={
-                        currentUser.profile?.photos?.[0]?.filePath ||
-                        'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=800&auto=format&fit=crop&q=80'
-                      }
-                      alt={currentUser.profile?.displayName || 'Avatar'}
-                      className="w-full h-full object-cover"
-                    />
+                    {currentUser.profile?.photos?.[0]?.filePath ? (
+                      <img
+                        src={currentUser.profile.photos[0].filePath}
+                        alt={currentUser.profile?.displayName || 'Avatar'}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-2xl font-bold text-surface-400">
+                        {(currentUser.profile?.displayName || 'Y').charAt(0).toUpperCase()}
+                      </div>
+                    )}
                     {/* Hover Camera overlay for desktop */}
                     <button
                       type="button"
@@ -2817,8 +3130,11 @@ export default function AppHome() {
 
                   <div className="flex items-center justify-center gap-1.5 mb-1">
                     <h2 className="text-xl font-bold text-white">
-                      {currentUser.profile?.displayName || 'Traveler'}
-                      {currentUser.age ? `, ${currentUser.age}` : currentUser.profile?.age ? `, ${currentUser.profile.age}` : ''}
+                      {currentUser.profile?.displayName &&
+                      currentUser.profile.displayName !== 'Visitor'
+                        ? currentUser.profile.displayName
+                        : 'Your profile'}
+                      {currentUser.age ? `, ${currentUser.age}` : ''}
                     </h2>
                     {(currentUser.isVerifiedLead || currentUser.profile?.isVerified) && (
                       <span title="Verified Account">
@@ -2827,15 +3143,16 @@ export default function AppHome() {
                     )}
                   </div>
 
-                  {/* Contact directly under name with inline eye/eye-off toggle */}
-                  {(currentUser.isVerifiedLead || currentUser.profile?.isVerified) ? (
+                  {currentUser.phone ? (
                     <div className="flex items-center justify-center gap-1.5 mb-3">
                       <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-950/80 border border-surface-800 text-xs text-surface-200 shadow-sm">
                         <span className="font-mono text-[11px] text-surface-300">
                           {hideContactNumber ? (
-                            <span className="text-surface-500 tracking-wider">••••••••••</span>
+                            <span className="text-surface-400 tracking-wide">
+                              {maskPhoneLast4(currentUser.phone)}
+                            </span>
                           ) : (
-                            currentUser.whatsapp || currentUser.phone || (currentUser.telegram ? `@${currentUser.telegram}` : currentUser.email || 'Verified')
+                            currentUser.phone
                           )}
                         </span>
                         <button
@@ -2853,35 +3170,25 @@ export default function AppHome() {
                         </button>
                       </div>
                     </div>
-                  ) : (
-                    <div className="w-full">
-                      <p className="text-xs text-surface-400 mb-2">{currentUser.email || 'Guest Traveler'}</p>
-                      <div className="w-full mt-2 mb-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 flex items-center justify-between gap-3 text-left">
-                        <div className="flex items-center gap-2">
-                          <ShieldCheck className="w-4 h-4 text-amber-400 shrink-0" />
-                          <div>
-                            <p className="font-bold text-xs text-white">Get Verified Badge ✔</p>
-                            <p className="text-[11px] text-amber-200/80">Verify your WhatsApp or Phone to show partners you are genuine.</p>
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setShowVerificationModal(true)}
-                          className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-surface-950 font-bold text-xs shrink-0 cursor-pointer shadow transition"
-                        >
-                          Verify Now
-                        </button>
-                      </div>
-                    </div>
-                  )}
+                  ) : null}
 
                   <div className="flex flex-wrap justify-center gap-1.5 mb-4">
-                    <span className="badge-teal">
-                      {currentUser.profile?.gender ? currentUser.profile.gender.toUpperCase() : 'MEMBER'}
-                    </span>
-                    <span className="badge-brand">
-                      {currentUser.profile?.country || 'GLOBAL'}
-                    </span>
+                    {currentUser.profile?.gender && (
+                      <span className="badge-teal">
+                        {currentUser.profile.gender === 'male' ? 'Male' : 'Female'}
+                      </span>
+                    )}
+                    {(currentUser.profile?.city || currentUser.profile?.country) && (
+                      <span className="badge-teal inline-flex items-center gap-1">
+                        <MapPin className="w-3 h-3" />
+                        {[currentUser.profile?.city, currentUser.profile?.country]
+                          .filter(Boolean)
+                          .join(', ')}
+                      </span>
+                    )}
+                    {currentUser.phone && (
+                      <span className="badge-brand">Verified number</span>
+                    )}
                   </div>
 
                   <div className="w-full mb-3">
@@ -2985,16 +3292,97 @@ export default function AppHome() {
 
                   <form onSubmit={handleSaveProfile} className="space-y-4 text-xs">
                     <div>
-                      <label className="input-label">Relationship Intention</label>
+                      <label className="input-label">I am</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {(['male', 'female'] as const).map((g) => (
+                          <button
+                            key={g}
+                            type="button"
+                            onClick={() => setEditGender(g)}
+                            className={`py-2.5 rounded-xl text-xs font-semibold capitalize transition cursor-pointer border ${
+                              editGender === g
+                                ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200'
+                                : 'bg-surface-800 border-surface-700/60 text-surface-400 hover:text-white'
+                            }`}
+                          >
+                            {g === 'male' ? 'Male' : 'Female'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="input-label">Age</label>
+                      <select
+                        value={editAge}
+                        onChange={(e) => setEditAge(e.target.value)}
+                        className="input-field text-xs py-2.5"
+                      >
+                        <option value="">Set your age</option>
+                        {Array.from({ length: 53 }, (_, i) => i + 18).map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="input-label">Country</label>
+                      <select
+                        value={editCountry}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          setEditCountry(next);
+                          const allowed = citiesForCountry(next);
+                          if (editCity && !allowed.includes(editCity)) setEditCity('');
+                        }}
+                        className="input-field text-xs py-2.5"
+                      >
+                        <option value="">Select country</option>
+                        {PROFILE_LOCATIONS.map((row) => (
+                          <option key={row.country} value={row.country}>
+                            {row.country}
+                          </option>
+                        ))}
+                        {editCountry &&
+                          !PROFILE_LOCATIONS.some((row) => row.country === editCountry) && (
+                            <option value={editCountry}>{editCountry}</option>
+                          )}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="input-label">City</label>
+                      <select
+                        value={editCity}
+                        onChange={(e) => setEditCity(e.target.value)}
+                        disabled={!editCountry}
+                        className="input-field text-xs py-2.5 disabled:opacity-50"
+                      >
+                        <option value="">{editCountry ? 'Select city' : 'Pick a country first'}</option>
+                        {citiesForCountry(editCountry).map((city) => (
+                          <option key={city} value={city}>
+                            {city}
+                          </option>
+                        ))}
+                        {editCity && !citiesForCountry(editCountry).includes(editCity) && (
+                          <option value={editCity}>{editCity}</option>
+                        )}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="input-label">I want to meet</label>
                       <select
                         value={editLookingFor}
                         onChange={(e) => setEditLookingFor(e.target.value)}
                         className="input-field text-xs py-2.5"
                       >
-                        <option value="life_partner">Life Partner / Matrimony</option>
-                        <option value="relationship">Long-term Relationship</option>
-                        <option value="dating">Casual Dating</option>
-                        <option value="friendship">Friendship</option>
+                        <option value="">Skip for now</option>
+                        <option value="local_guide">A local guide</option>
+                        <option value="travel_partner">A travel partner</option>
+                        <option value="friendship">Friends in the city</option>
                       </select>
                     </div>
 
@@ -3040,7 +3428,7 @@ export default function AppHome() {
       {/* ============================================================ */}
       {/* MOBILE BOTTOM NAVIGATION BAR                                 */}
       {/* ============================================================ */}
-      <nav className={`bottom-nav md:hidden ${activeTab === 'messenger' && activeChat ? 'hidden' : ''}`}>
+      <nav className={`bottom-nav md:hidden ${!navReady || (activeTab === 'messenger' && activeChat) ? 'hidden' : ''}`}>
         <button
           onClick={() => handleSwitchTab('discover')}
           className={`nav-item ${activeTab === 'discover' ? 'active' : ''}`}
@@ -3343,7 +3731,7 @@ export default function AppHome() {
       )}
 
       {/* ============================================================ */}
-      {/* MODAL: AUTHENTICATION (SIGN IN / SIGN UP / QUICK DEMO)        */}
+      {/* MODAL: PHONE LOGIN (returning visitor)                        */}
       {/* ============================================================ */}
       {showAuthModal && (
         <div className="modal-overlay" onClick={handleCloseAuthModal}>
@@ -3351,139 +3739,21 @@ export default function AppHome() {
             className="modal-content max-w-md relative"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Modal Header: Contextual if arriving with an intent, or clean standard */}
-            {pendingIntent?.profileName ? (
-              <div className="flex items-start justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  {pendingIntent.profilePhoto ? (
-                    <img
-                      src={pendingIntent.profilePhoto}
-                      alt={pendingIntent.profileName}
-                      className="w-12 h-12 rounded-full object-cover ring-2 ring-brand-500/50 shadow-md shrink-0"
-                    />
-                  ) : (
-                    <div className="w-12 h-12 rounded-full bg-brand-500/20 text-brand-400 flex items-center justify-center font-bold text-lg shrink-0">
-                      {pendingIntent.profileName[0]}
-                    </div>
-                  )}
-                  <div>
-                    <h3 className="text-base font-bold text-white leading-tight">
-                      {authMode === 'login' ? 'Welcome Back' : `Send a message to ${pendingIntent.profileName}`}
-                    </h3>
-                    <p className="text-xs text-brand-300 font-medium mt-0.5">
-                      {authMode === 'login'
-                        ? `Sign in to reply to ${pendingIntent.profileName}`
-                        : `Create your free profile in 10 seconds to start chatting`}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={handleCloseAuthModal}
-                  className="w-8 h-8 rounded-lg flex items-center justify-center text-surface-400 hover:text-white hover:bg-surface-800 transition cursor-pointer min-w-[36px] min-h-[36px] shrink-0"
-                  aria-label="Close dialog"
-                >
-                  <X className="w-4 h-4" />
-                </button>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-lg font-bold text-white">Welcome back</h3>
+                <p className="text-xs text-surface-400 mt-0.5">
+                  Log in with the mobile number you used in chat. No password.
+                </p>
               </div>
-            ) : (
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h3 className="text-lg font-bold text-white">
-                    {authMode === 'login' ? 'Welcome Back' : 'Create Free Account'}
-                  </h3>
-                  <p className="text-xs text-surface-400 mt-0.5">
-                    {authMode === 'login'
-                      ? 'Sign in to access your messages and matches'
-                      : 'Join Heartlink to discover meaningful connections worldwide'}
-                  </p>
-                </div>
-                <button
-                  onClick={handleCloseAuthModal}
-                  className="w-8 h-8 rounded-lg flex items-center justify-center text-surface-400 hover:text-white hover:bg-surface-800 transition cursor-pointer min-w-[36px] min-h-[36px]"
-                  aria-label="Close dialog"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            )}
-
-            {/* Modal Mode Selector Tabs */}
-            <div className="grid grid-cols-3 gap-1 p-1 bg-surface-900 rounded-xl mb-3 border border-surface-800 text-xs">
               <button
-                type="button"
-                onClick={() => {
-                  setAuthMode('login');
-                  setAuthError('');
-                }}
-                className={`py-1.5 rounded-lg font-medium transition cursor-pointer text-center ${
-                  authMode === 'login'
-                    ? 'bg-brand-500 text-white shadow-sm'
-                    : 'text-surface-400 hover:text-white'
-                }`}
+                onClick={handleCloseAuthModal}
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-surface-400 hover:text-white hover:bg-surface-800 transition cursor-pointer min-w-[36px] min-h-[36px]"
+                aria-label="Close dialog"
               >
-                Sign In
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setAuthMode('signup');
-                  setAuthError('');
-                }}
-                className={`py-1.5 rounded-lg font-medium transition cursor-pointer text-center ${
-                  authMode === 'signup'
-                    ? 'bg-brand-500 text-white shadow-sm'
-                    : 'text-surface-400 hover:text-white'
-                }`}
-              >
-                Register
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setAuthMode('contact_login');
-                  setAuthError('');
-                }}
-                className={`py-1.5 rounded-lg font-medium transition cursor-pointer text-center ${
-                  authMode === 'contact_login'
-                    ? 'bg-brand-500 text-white shadow-sm'
-                    : 'text-surface-400 hover:text-white'
-                }`}
-              >
-                Phone / WA
+                <X className="w-4 h-4" />
               </button>
             </div>
-
-            {/* Quick Demo Switcher — never ship in production builds */}
-            {process.env.NODE_ENV !== 'production' && authMode !== 'contact_login' && (
-              <div className="bg-surface-800/60 p-2.5 rounded-xl mb-3.5 border border-surface-700/50">
-                <p className="text-[10px] font-semibold text-surface-400 uppercase tracking-wider mb-1.5 flex items-center gap-1">
-                  <span>Instant Test Persona Login (1-Click):</span>
-                </p>
-                <div className="grid grid-cols-3 gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => handleQuickLogin('daniel.kim@example.com')}
-                    className="py-1.5 px-2 rounded-lg bg-surface-700/80 hover:bg-brand-600 text-[11px] font-medium transition text-center truncate cursor-pointer text-white"
-                  >
-                    Daniel Kim
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleQuickLogin('elena.rostova@example.com')}
-                    className="py-1.5 px-2 rounded-lg bg-surface-700/80 hover:bg-brand-600 text-[11px] font-medium transition text-center truncate cursor-pointer text-white"
-                  >
-                    Elena Rostova
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleQuickLogin('aisha.rahman@example.com')}
-                    className="py-1.5 px-2 rounded-lg bg-surface-700/80 hover:bg-brand-600 text-[11px] font-medium transition text-center truncate cursor-pointer text-white"
-                  >
-                    Aisha Rahman
-                  </button>
-                </div>
-              </div>
-            )}
 
             {authError && (
               <div className="mb-3 p-2.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 text-xs flex items-center gap-1.5">
@@ -3492,152 +3762,34 @@ export default function AppHome() {
               </div>
             )}
 
-            {authMode === 'contact_login' ? (
-              <form onSubmit={handleContactLoginSubmit} className="space-y-3.5 text-xs">
-                <div>
-                  <label className="input-label">Verified Phone, WhatsApp, or Telegram</label>
-                  <input
-                    type="text"
-                    required
-                    value={contactLoginInput}
-                    onChange={(e) => setContactLoginInput(e.target.value)}
-                    placeholder="+1 234 567 8900 or @username"
-                    className="input-field text-xs py-2.5"
-                    autoFocus
-                  />
-                  <p className="text-[11px] text-surface-400 mt-1.5">
-                    Enter the phone number, WhatsApp number, or Telegram username you used previously to verify. We'll instantly restore your chat history and account.
-                  </p>
-                </div>
+            <form onSubmit={handleContactLoginSubmit} className="space-y-3.5 text-xs">
+              <div>
+                <label className="input-label">Your mobile number</label>
+                <input
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="tel"
+                  required
+                  value={contactLoginInput}
+                  onChange={(e) => setContactLoginInput(e.target.value)}
+                  placeholder="e.g. +971 50 123 4567"
+                  className="input-field text-xs py-2.5"
+                  autoFocus
+                />
+              </div>
 
-                <button
-                  type="submit"
-                  disabled={authSubmitting || !contactLoginInput.trim()}
-                  className="btn-primary w-full py-2.5 text-xs font-semibold mt-2 shadow-lg shadow-brand-500/25 cursor-pointer disabled:opacity-50"
-                >
-                  {authSubmitting ? 'Logging In...' : 'Log In with Verified Contact'}
-                </button>
-              </form>
-            ) : (
-              <form onSubmit={handleAuthSubmit} className="space-y-3 text-xs">
-                {authMode === 'signup' && (
-                  <>
-                    <div>
-                      <label className="input-label">Your Name / Nickname</label>
-                      <input
-                        type="text"
-                        required
-                        value={authName}
-                        onChange={(e) => setAuthName(e.target.value)}
-                        placeholder="e.g. Maya"
-                        className="input-field text-xs py-2"
-                      />
-                    </div>
+              <button
+                type="submit"
+                disabled={authSubmitting || !contactLoginInput.trim()}
+                className="btn-primary w-full py-2.5 text-xs font-semibold mt-2 shadow-lg shadow-brand-500/25 cursor-pointer disabled:opacity-50"
+              >
+                {authSubmitting ? 'Logging in…' : 'Open my chats'}
+              </button>
+            </form>
 
-                    <div>
-                      <label className="input-label">I am</label>
-                      <div className="grid grid-cols-3 gap-2">
-                        {(['female', 'male', 'other'] as const).map((g) => (
-                          <button
-                            key={g}
-                            type="button"
-                            onClick={() => setAuthGender(g)}
-                            className={`py-1.5 px-2 rounded-xl text-xs font-semibold capitalize transition cursor-pointer border ${
-                              authGender === g
-                                ? 'bg-brand-500/20 border-brand-500 text-brand-300'
-                                : 'bg-surface-800 border-surface-700/60 text-surface-300 hover:text-white'
-                            }`}
-                          >
-                            {g === 'female' ? 'Woman' : g === 'male' ? 'Man' : 'Other'}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </>
-                )}
-
-                <div>
-                  <label className="input-label">Email Address</label>
-                  <input
-                    type="email"
-                    required
-                    value={authEmail}
-                    onChange={(e) => setAuthEmail(e.target.value)}
-                    placeholder="name@example.com"
-                    className="input-field text-xs py-2"
-                  />
-                </div>
-
-                <div>
-                  <label className="input-label">Password</label>
-                  <input
-                    type="password"
-                    required
-                    value={authPassword}
-                    onChange={(e) => setAuthPassword(e.target.value)}
-                    placeholder="•••••••• (minimum 6 characters)"
-                    className="input-field text-xs py-2"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={authSubmitting}
-                  className="btn-primary w-full py-2.5 text-xs font-semibold mt-2 shadow-lg shadow-brand-500/25 cursor-pointer"
-                >
-                  {authSubmitting
-                    ? 'Processing...'
-                    : authMode === 'login'
-                    ? 'Sign In to Account'
-                    : pendingIntent?.profileName
-                    ? `Continue & Message ${pendingIntent.profileName}`
-                    : 'Create Free Account'}
-                </button>
-              </form>
-            )}
-
-            <div className="mt-4 pt-3 border-t border-surface-800 text-center text-xs text-surface-400">
-              {authMode === 'login' ? (
-                <p>
-                  Don't have an account yet?{' '}
-                  <button
-                    onClick={() => {
-                      setAuthMode('signup');
-                      setAuthError('');
-                    }}
-                    className="text-brand-400 font-semibold hover:underline cursor-pointer"
-                  >
-                    Sign up now
-                  </button>
-                </p>
-              ) : authMode === 'signup' ? (
-                <p>
-                  Already have an account?{' '}
-                  <button
-                    onClick={() => {
-                      setAuthMode('login');
-                      setAuthError('');
-                    }}
-                    className="text-brand-400 font-semibold hover:underline cursor-pointer"
-                  >
-                    Sign in here
-                  </button>
-                </p>
-              ) : (
-                <p>
-                  Want to use standard email login?{' '}
-                  <button
-                    onClick={() => {
-                      setAuthMode('login');
-                      setAuthError('');
-                    }}
-                    className="text-brand-400 font-semibold hover:underline cursor-pointer"
-                  >
-                    Sign in with email
-                  </button>
-                </p>
-              )}
-            </div>
+            <p className="mt-4 text-[11px] text-surface-500 text-center">
+              New here? Find someone first — your account is created when you send a message.
+            </p>
           </div>
         </div>
       )}
@@ -3754,12 +3906,11 @@ export default function AppHome() {
                   type="button"
                   onClick={() => {
                     setShowQuickMatchModal(false);
-                    setAuthMode('contact_login');
                     setShowAuthModal(true);
                   }}
                   className="text-brand-400 font-semibold hover:underline cursor-pointer"
                 >
-                  Log in with Phone, WhatsApp or Telegram
+                  Log in with your mobile number
                 </button>
               </p>
             </div>
@@ -3919,6 +4070,6 @@ export default function AppHome() {
         armed={replyArrived || firstMessageSent}
         senderName={replySenderName}
       />
-    </div>
+    </PullToRefresh>
   );
 }

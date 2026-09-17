@@ -3,12 +3,12 @@ import './globals.css';
 import MetaPixel from './components/MetaPixel';
 import RegisterSW from './components/RegisterSW';
 
-const appName = process.env.NEXT_PUBLIC_APP_NAME || 'Heartlink';
+const appName = 'City Host';
 
 export const metadata: Metadata = {
   title: `${appName} — Meet travellers visiting your city`,
   description:
-    'Connect with travellers planning upcoming trips to your city. Say hi on-site — no signup. 18+.',
+    'Meet local guides and travellers visiting your city. Chat in City Host — add it to your home screen so replies stay with you.',
   manifest: '/manifest.json',
   icons: {
     icon: '/icon-192.png',
@@ -52,6 +52,18 @@ export default function RootLayout({
         />
         <link rel="apple-touch-icon" href="/icon-192.png" />
         <meta name="mobile-web-app-capable" content="yes" />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              window.__pwaInstallPrompt = null;
+              window.addEventListener('beforeinstallprompt', function(e) {
+                e.preventDefault();
+                window.__pwaInstallPrompt = e;
+                window.dispatchEvent(new CustomEvent('heartlink:pwa-prompt-ready'));
+              });
+            `,
+          }}
+        />
       </head>
       <body className="antialiased app-shell" suppressHydrationWarning>
         <MetaPixel />

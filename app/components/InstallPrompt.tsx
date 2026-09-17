@@ -39,6 +39,11 @@ function isIOS(): boolean {
   );
 }
 
+function isAndroid(): boolean {
+  if (typeof window === 'undefined') return false;
+  return /Android/i.test(window.navigator.userAgent);
+}
+
 function wasRecentlyDismissed(): boolean {
   if (typeof window === 'undefined') return false;
   try {
@@ -87,14 +92,31 @@ export default function InstallPrompt({
   }, []);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    if ((window as any).__pwaInstallPrompt) {
+      setDeferred((window as any).__pwaInstallPrompt);
+    }
+
     const onBeforeInstall = (event: Event) => {
       event.preventDefault();
+      (window as any).__pwaInstallPrompt = event;
       setDeferred(event as BeforeInstallPromptEvent);
     };
 
+    const onPromptReady = () => {
+      if ((window as any).__pwaInstallPrompt) {
+        setDeferred((window as any).__pwaInstallPrompt);
+      }
+    };
+
     window.addEventListener('beforeinstallprompt', onBeforeInstall);
-    return () =>
+    window.addEventListener('heartlink:pwa-prompt-ready', onPromptReady);
+
+    return () => {
       window.removeEventListener('beforeinstallprompt', onBeforeInstall);
+      window.removeEventListener('heartlink:pwa-prompt-ready', onPromptReady);
+    };
   }, []);
 
   useEffect(() => {
@@ -109,12 +131,10 @@ export default function InstallPrompt({
 
     // Soft teaser: show quickly on match page once SW/prompt is ready.
     // Full toast: wait a beat so it does not fight the chat UI.
-    const delay = softTeaser ? 600 : 1200;
-    if (deferred || isIOS() || softTeaser) {
-      const timer = setTimeout(() => setVisible(true), delay);
-      return () => clearTimeout(timer);
-    }
-  }, [armed, deferred, forceVisible, softTeaser]);
+    const delay = softTeaser ? 400 : 1000;
+    const timer = setTimeout(() => setVisible(true), delay);
+    return () => clearTimeout(timer);
+  }, [armed, forceVisible, softTeaser]);
 
   const dismiss = useCallback(() => {
     setVisible(false);
@@ -128,13 +148,24 @@ export default function InstallPrompt({
   }, [forceVisible]);
 
   const install = useCallback(async () => {
-    if (deferred) {
-      await deferred.prompt();
-      const choice = await deferred.userChoice;
-      setDeferred(null);
-      setVisible(false);
-      if (choice.outcome === 'dismissed') dismiss();
-      return;
+    const promptEvent =
+      deferred ||
+      (typeof window !== 'undefined'
+        ? ((window as any).__pwaInstallPrompt as BeforeInstallPromptEvent | undefined)
+        : null);
+
+    if (promptEvent) {
+      try {
+        await promptEvent.prompt();
+        const choice = await promptEvent.userChoice;
+        if (typeof window !== 'undefined') (window as any).__pwaInstallPrompt = null;
+        setDeferred(null);
+        setVisible(false);
+        if (choice.outcome === 'dismissed') dismiss();
+        return;
+      } catch {
+        // Fall back to guide if prompt was invalidated
+      }
     }
     setShowIOSGuide(true);
   }, [deferred, dismiss]);
@@ -142,6 +173,8 @@ export default function InstallPrompt({
   if (!visible) return null;
 
   const who = senderName?.trim() || 'She';
+  const ios = isIOS();
+  const android = isAndroid();
 
   if (showIOSGuide) {
     return (
@@ -153,10 +186,14 @@ export default function InstallPrompt({
           <div className="flex items-start justify-between gap-3 mb-4">
             <div>
               <h3 className="text-base font-bold text-white">
-                Add to Home Screen
+                {android ? 'Install on Android' : ios ? 'Add to Home Screen' : 'Install City Host'}
               </h3>
               <p className="text-xs text-surface-400 mt-1">
-                iPhone needs Share → Add to Home Screen. Then reply alerts work like an app.
+                {android
+                  ? 'Add City Host to your home screen for 1-click access and reply alerts.'
+                  : ios
+                  ? 'iPhone needs Share → Add to Home Screen in Safari.'
+                  : 'Install City Host app for instant chat and notifications.'}
               </p>
             </div>
             {!compact && !softTeaser && (
@@ -176,10 +213,19 @@ export default function InstallPrompt({
                 1
               </span>
               <span className="text-xs text-surface-200 flex items-center gap-1.5">
-                Tap
-                <Share className="w-4 h-4 text-brand-400" />
-                <span className="font-semibold text-white">Share</span>
-                in Safari
+                {android ? (
+                  <>
+                    Tap <span className="font-bold text-white text-sm">⋮</span> (Menu) in top-right of your browser
+                  </>
+                ) : ios ? (
+                  <>
+                    Tap <Share className="w-4 h-4 text-brand-400" /> <span className="font-semibold text-white">Share</span> in Safari
+                  </>
+                ) : (
+                  <>
+                    Click the <Download className="w-4 h-4 text-brand-400" /> <span className="font-semibold text-white">Install</span> icon in browser address bar
+                  </>
+                )}
               </span>
             </li>
             <li className="flex items-center gap-3 p-3 rounded-xl bg-surface-800/70 border border-surface-700/60">
@@ -187,9 +233,19 @@ export default function InstallPrompt({
                 2
               </span>
               <span className="text-xs text-surface-200 flex items-center gap-1.5">
-                Choose
-                <Plus className="w-4 h-4 text-brand-400" />
-                <span className="font-semibold text-white">Add to Home Screen</span>
+                {android ? (
+                  <>
+                    Choose <Plus className="w-4 h-4 text-brand-400" /> <span className="font-semibold text-white">Install app</span> or <span className="font-semibold text-white">Add to Home screen</span>
+                  </>
+                ) : ios ? (
+                  <>
+                    Choose <Plus className="w-4 h-4 text-brand-400" /> <span className="font-semibold text-white">Add to Home Screen</span>
+                  </>
+                ) : (
+                  <>
+                    Click <span className="font-semibold text-white">Install</span>
+                  </>
+                )}
               </span>
             </li>
           </ol>
@@ -205,89 +261,43 @@ export default function InstallPrompt({
     );
   }
 
-  if (softTeaser) {
+  if (softTeaser || compact) {
     return (
-      <div className="rounded-2xl border border-dashed border-surface-700/80 bg-surface-900/40 px-3.5 py-3 flex items-center gap-3">
-        <div className="w-9 h-9 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center shrink-0">
-          <Download className="w-4 h-4 text-emerald-300" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-xs font-semibold text-white">Never miss a reply</p>
-          <p className="text-[11px] text-surface-500 leading-snug mt-0.5">
-            Install Heartlink — one tap on Android, Home Screen on iPhone.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={install}
-          className="shrink-0 text-[11px] font-bold text-emerald-300 hover:text-emerald-200 px-2 py-1.5"
-        >
-          Install
-        </button>
-      </div>
-    );
-  }
-
-  if (compact) {
-    return (
-      <div className="rounded-2xl border border-surface-700 bg-surface-800/60 p-3.5 flex items-start gap-3">
-        <div className="w-9 h-9 rounded-xl bg-brand-500/20 border border-brand-500/40 flex items-center justify-center shrink-0">
-          <Download className="w-4 h-4 text-brand-300" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-white">Install this app</p>
-          <p className="text-[11px] text-surface-400 mt-0.5 leading-relaxed">
-            One-tap home screen. Come back when she replies — free, no store.
-          </p>
-          <button
-            type="button"
-            onClick={install}
-            className="mt-2.5 btn-secondary py-2 px-3 text-xs font-semibold cursor-pointer"
-          >
-            Install in one click
-          </button>
-        </div>
-      </div>
+      <button
+        type="button"
+        onClick={install}
+        className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-surface-900 border border-surface-700 hover:border-brand-500/40 transition cursor-pointer text-left"
+      >
+        <span className="flex items-center gap-2 min-w-0">
+          <Download className="w-3.5 h-3.5 text-brand-400 shrink-0" />
+          <span className="text-xs font-semibold text-white truncate">
+            One click install this app
+          </span>
+        </span>
+        <span className="text-[10px] font-bold text-brand-300 shrink-0">Install</span>
+      </button>
     );
   }
 
   return (
-    <div className="fixed bottom-20 md:bottom-6 left-3 right-3 md:left-auto md:right-6 md:max-w-sm z-50">
-      <div className="glass-card p-4 flex items-start gap-3 border-brand-500/40">
-        <div className="w-10 h-10 rounded-xl bg-brand-500/20 border border-brand-500/40 flex items-center justify-center shrink-0">
-          <Download className="w-5 h-5 text-brand-300" />
-        </div>
-
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-bold text-white">
-            {senderName ? `${who} replied` : 'Stay in the chat'}
-          </p>
-          <p className="text-xs text-surface-300 mt-0.5 leading-relaxed">
-            Install Heartlink on your home screen — open in one tap when a reply lands.
-          </p>
-
-          <div className="flex items-center gap-2 mt-3">
-            <button
-              onClick={install}
-              className="btn-primary py-2 px-3.5 text-xs font-semibold cursor-pointer"
-            >
-              Install app
-            </button>
-            <button
-              onClick={dismiss}
-              className="btn-ghost py-2 px-2.5 text-xs cursor-pointer"
-            >
-              Not now
-            </button>
-          </div>
-        </div>
-
+    <div className="fixed bottom-20 md:bottom-6 left-3 right-3 md:left-auto md:right-6 md:max-w-xs z-50">
+      <div className="glass-card px-3 py-2 flex items-center gap-2 border-brand-500/40">
+        <Download className="w-4 h-4 text-brand-300 shrink-0" />
+        <p className="flex-1 min-w-0 text-xs font-semibold text-white truncate">
+          {senderName ? `${who} replied — ` : ''}One click install this app
+        </p>
+        <button
+          onClick={install}
+          className="shrink-0 text-[10px] font-bold text-brand-300 hover:text-brand-200 cursor-pointer"
+        >
+          Install
+        </button>
         <button
           onClick={dismiss}
           aria-label="Dismiss"
           className="text-surface-500 hover:text-white cursor-pointer shrink-0"
         >
-          <X className="w-4 h-4" />
+          <X className="w-3.5 h-3.5" />
         </button>
       </div>
     </div>

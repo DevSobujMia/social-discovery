@@ -46,7 +46,7 @@ export async function runSection1() {
     // Verify Title
     const title = await page.title();
     console.log(`Page Title: "${title}"`);
-    if (!title.includes('Heartlink')) {
+    if (!title.includes('City Host')) {
       throw new Error(`Unexpected page title: ${title}`);
     }
 

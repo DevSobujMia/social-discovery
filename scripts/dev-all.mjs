@@ -76,7 +76,7 @@ async function main() {
   });
 
   console.log('');
-  console.log('  Heartlink starting...');
+  console.log('  City Host starting...');
   console.log('  (database + website — one command)');
   console.log('');
 
@@ -100,7 +100,21 @@ async function main() {
   }
 
   try {
-    await run('npx', ['prisma', 'db', 'push'], 'Preparing database');
+    const schemaPath = path.join(root, 'prisma/schema.prisma');
+    const hashFile = path.join(root, '.pgdata/.schema_hash');
+    const currentMtime = fs.existsSync(schemaPath) ? String(fs.statSync(schemaPath).mtimeMs) : '';
+    const cachedMtime = fs.existsSync(hashFile) ? fs.readFileSync(hashFile, 'utf8') : '';
+
+    if (currentMtime !== cachedMtime || (await databaseNeedsSeed())) {
+      await run('npx', ['prisma', 'db', 'push'], 'Preparing database');
+      try {
+        if (fs.existsSync(path.join(root, '.pgdata'))) {
+          fs.writeFileSync(hashFile, currentMtime, 'utf8');
+        }
+      } catch {}
+    } else {
+      console.log('\n→ Database schema up to date (fast start)');
+    }
 
     if (await databaseNeedsSeed()) {
       await run('node', ['scripts/seed.mjs'], 'Loading profiles (first run only)');

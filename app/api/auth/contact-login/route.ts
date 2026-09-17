@@ -1,75 +1,125 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
-import { signToken, setAuthCookie } from '@/lib/auth';
-import { success, error, handleApiError } from '@/lib/api-helpers';
+import {
+  GUEST_SESSION_DAYS,
+  signToken,
+  attachUserCookie,
+} from '@/lib/auth';
+import { error, handleApiError } from '@/lib/api-helpers';
+import { attachIdentity, findUserIdByIdentity, normalizeIdentityValue } from '@/lib/leads';
+import { mergeDeviceMeta } from '@/lib/device-meta';
 
+/**
+ * Returning visitor login — mobile number only, no password.
+ */
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { contact } = body;
+    const { contact, deviceToken, device } = body;
 
     if (!contact || typeof contact !== 'string' || !contact.trim()) {
-      return error('Please enter your Phone, WhatsApp, or Telegram.', 400);
+      return error('Enter the mobile number you used in chat.', 400);
     }
 
     const cleanContact = contact.trim();
+    const normalized = normalizeIdentityValue('phone', cleanContact, null);
     const cleanDigits = cleanContact.replace(/[^0-9]/g, '');
-    const telegramWithAt = cleanContact.startsWith('@') ? cleanContact : `@${cleanContact}`;
-    const telegramWithoutAt = cleanContact.replace(/^@/, '');
 
-    // Search user by exact match or digit match
-    let user = await prisma.user.findFirst({
-      where: {
-        OR: [
-          { phone: cleanContact },
-          { whatsapp: cleanContact },
-          { telegram: cleanContact },
-          { telegram: telegramWithAt },
-          { telegram: telegramWithoutAt },
-          ...(cleanDigits.length >= 6
-            ? [
-                { phone: { contains: cleanDigits } },
-                { whatsapp: { contains: cleanDigits } },
-              ]
-            : []),
-        ],
-      },
-      include: {
-        profile: {
-          include: { photos: true },
-        },
-      },
-    });
+    let userId: string | null = null;
+    if (normalized) {
+      userId =
+        (await findUserIdByIdentity('phone', normalized)) ||
+        (await findUserIdByIdentity('whatsapp', normalized));
+    }
+
+    let user = userId
+      ? await prisma.user.findUnique({
+          where: { id: userId },
+          include: { profile: { include: { photos: true } } },
+        })
+      : null;
 
     if (!user) {
-      return error('No existing account found with this contact. Please start a new chat and verify.', 404);
+      user = await prisma.user.findFirst({
+        where: {
+          OR: [
+            ...(normalized
+              ? [{ phone: normalized }, { whatsapp: normalized }]
+              : []),
+            { phone: cleanContact },
+            { whatsapp: cleanContact },
+            ...(cleanDigits.length >= 8
+              ? [
+                  { phone: { contains: cleanDigits } },
+                  { whatsapp: { contains: cleanDigits } },
+                ]
+              : []),
+          ],
+        },
+        include: {
+          profile: {
+            include: { photos: true },
+          },
+        },
+      });
+    }
+
+    if (!user) {
+      return error(
+        'No chat account found with this number. Send a message with your name and number first.',
+        404
+      );
     }
 
     if (user.status === 'blocked' || user.status === 'suspended') {
-      return error('This account has been suspended or restricted.', 403);
+      return error('This account has been suspended.', 403);
     }
 
-    // Issue JWT cookie
-    const token = signToken({
-      id: user.id,
-      email: user.email || '',
-      type: 'user',
-    });
-    await setAuthCookie(token);
-
-    return success({
-      user: {
-        id: user.id,
-        displayName: user.profile?.displayName || 'Customer',
-        phone: user.phone,
-        whatsapp: user.whatsapp,
-        telegram: user.telegram,
-        isVerifiedLead: user.isVerifiedLead,
-        leadStage: user.leadStage,
-        verifiedVia: user.verifiedVia,
+    const mergedDevice = mergeDeviceMeta(user.deviceMeta, device);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        lastActiveAt: new Date(),
+        ...(mergedDevice ? { deviceMeta: mergedDevice } : {}),
       },
-      message: 'Logged in successfully! Your chat history has been restored.',
     });
+
+    if (deviceToken && typeof deviceToken === 'string') {
+      await attachIdentity({
+        userId: user.id,
+        kind: 'device',
+        value: deviceToken,
+      });
+    }
+
+    const token = signToken(
+      {
+        id: user.id,
+        email: user.email || '',
+        type: 'user',
+      },
+      GUEST_SESSION_DAYS
+    );
+
+    const res = NextResponse.json({
+      success: true,
+      data: {
+        user: {
+          id: user.id,
+          displayName: user.profile?.displayName || 'Customer',
+          phone: user.phone,
+          whatsapp: user.whatsapp,
+          telegram: user.telegram,
+          isVerifiedLead: user.isVerifiedLead,
+          leadStage: user.leadStage,
+          verifiedVia: user.verifiedVia,
+          profile: user.profile,
+        },
+        message: 'Logged in. Your chats are restored.',
+      },
+    });
+
+    return attachUserCookie(res, token, GUEST_SESSION_DAYS);
   } catch (err) {
     return handleApiError(err);
   }

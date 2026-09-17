@@ -233,7 +233,7 @@ async function runAudit() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: sarahCookie },
       body: JSON.stringify({
-        content: 'Hi Charlie, this is Sarah from Heartlink concierge. Let me know if you need assistance!',
+        content: 'Hi Charlie, this is Sarah from City Host concierge. Let me know if you need assistance!',
       }),
     });
 

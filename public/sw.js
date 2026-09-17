@@ -1,5 +1,5 @@
 /**
- * Heartlink service worker.
+ * City Host service worker.
  *
  * Two jobs:
  *   1. Make the site installable, so it can sit on a lead's home screen and
@@ -8,33 +8,26 @@
  *      we fully own for telling someone their reply arrived.
  */
 
-const CACHE = 'heartlink-v2';
-const SHELL = ['/', '/manifest.json', '/icon-192.png', '/icon-512.png'];
+const CACHE_NAME = 'cityhost-live-v3';
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches
-      .open(CACHE)
-      .then((cache) => cache.addAll(SHELL))
-      .then(() => self.skipWaiting())
-      .catch(() => self.skipWaiting())
-  );
+  // Immediately activate new service worker without waiting
+  self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
+  // Completely clear all old caches (including stale HTML/bundles from previous versions)
   event.waitUntil(
     caches
       .keys()
-      .then((keys) =>
-        Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)))
-      )
+      .then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
       .then(() => self.clients.claim())
   );
 });
 
 /**
- * Network-first. Chat content must never be served stale, so the cache is only
- * a fallback for when the device is genuinely offline.
+ * Live network pass-through.
+ * Never lock dynamic pages, HTML, or Next.js scripts in Service Worker storage.
  */
 self.addEventListener('fetch', (event) => {
   const { request } = event;
@@ -43,25 +36,11 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // API responses are never cached — a cached conversation would be wrong.
-  if (new URL(request.url).pathname.startsWith('/api/')) return;
-
+  // Network-first live fetch so users always get real-time deployed updates immediately
   event.respondWith(
-    fetch(request)
-      .then((response) => {
-        if (response && response.status === 200 && response.type === 'basic') {
-          const copy = response.clone();
-          caches.open(CACHE).then((cache) => cache.put(request, copy)).catch(() => {});
-        }
-        return response;
-      })
-      .catch(() =>
-        caches.match(request).then((cached) => {
-          if (cached) return cached;
-          if (request.mode === 'navigate') return caches.match('/');
-          return Response.error();
-        })
-      )
+    fetch(request).catch(() => {
+      return Response.error();
+    })
   );
 });
 

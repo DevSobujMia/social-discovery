@@ -4,6 +4,9 @@ import { hashPassword, signToken, setAuthCookie, attachUserCookie } from '@/lib/
 import { success, error, handleApiError, checkRateLimit } from '@/lib/api-helpers';
 
 export async function POST(req: NextRequest) {
+  if (process.env.NODE_ENV === 'production') {
+    return error('Public signup is closed. Start a chat with your name and number.', 404);
+  }
   try {
     const ip = req.headers.get('x-forwarded-for') || 'unknown';
     if (!checkRateLimit(`signup:${ip}`, 10, 60 * 60 * 1000)) {

@@ -3,6 +3,9 @@ import { prisma } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
 import { success, error, handleApiError } from '@/lib/api-helpers';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 // GET /api/conversations — list user's conversations
 export async function GET() {
   try {

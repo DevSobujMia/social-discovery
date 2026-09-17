@@ -38,6 +38,18 @@ function wipeDataDir() {
   console.log(`[db] Cleared broken database folder: ${dataDir}`);
 }
 
+/** Remove stale lock only — never delete profile/trip data for a leftover pid. */
+function clearStalePidOnly() {
+  const pidFile = path.join(dataDir, 'postmaster.pid');
+  if (!fs.existsSync(pidFile)) return;
+  try {
+    fs.unlinkSync(pidFile);
+    console.log('[db] Removed leftover postmaster.pid (kept .pgdata / your profiles).');
+  } catch (err) {
+    console.warn('[db] Could not remove leftover postmaster.pid:', err?.message || err);
+  }
+}
+
 /**
  * Start PGlite socket server. If the data dir is corrupt, wipe once and retry.
  */
@@ -46,15 +58,35 @@ export async function startPGliteServer({
   port = DB_PORT,
 } = {}) {
   if (await portInUse(host, port)) {
-    console.log(`[db] Postgres already listening on ${host}:${port} — reusing it.`);
-    return null;
+    // Reuse only if the listener actually answers SQL. A crashed leftover
+    // process on :5432 causes "prepared statement does not exist" on push.
+    try {
+      const { PrismaClient } = await import('@prisma/client');
+      const prisma = new PrismaClient();
+      await prisma.$queryRaw`SELECT 1`;
+      await prisma.$disconnect();
+      console.log(`[db] Postgres already listening on ${host}:${port} — reusing it.`);
+      return null;
+    } catch (err) {
+      console.log(
+        `[db] Port ${port} is occupied but unhealthy (${err?.message || err}). NOT wiping .pgdata — close other npm run dev windows, then retry.`
+      );
+      try {
+        const { PrismaClient } = await import('@prisma/client');
+        const prisma = new PrismaClient();
+        await prisma.$disconnect().catch(() => {});
+      } catch {
+        // ignore
+      }
+      throw new Error(
+        `Stale Postgres is still bound to ${host}:${port}. Close other npm run dev windows, then run again. (Profiles were NOT deleted.)`
+      );
+    }
   }
 
-  // Stale pid with nothing listening = previous crash. Safer to wipe.
-  const pidFile = path.join(dataDir, 'postmaster.pid');
-  if (fs.existsSync(pidFile)) {
-    console.log('[db] Found leftover postmaster.pid with nothing on the port.');
-    wipeDataDir();
+  // Stale pid with nothing listening = previous crash. Keep data; drop lock only.
+  if (!(await portInUse(host, port))) {
+    clearStalePidOnly();
   }
 
   async function boot() {
@@ -77,10 +109,17 @@ export async function startPGliteServer({
     return server;
   } catch (err) {
     console.error('[db] First start failed:', err?.message || err);
-    console.log('[db] Retrying with a fresh .pgdata ...');
-    wipeDataDir();
-    const server = await boot();
-    console.log(`[db] Postgres ready on ${host}:${port} (fresh .pgdata)`);
-    return server;
+    // Do NOT auto-wipe curated profile data. Only wipe when explicitly forced.
+    if (process.env.FORCE_DB_WIPE === '1') {
+      console.log('[db] FORCE_DB_WIPE=1 — recreating .pgdata ...');
+      wipeDataDir();
+      const server = await boot();
+      console.log(`[db] Postgres ready on ${host}:${port} (fresh .pgdata)`);
+      return server;
+    }
+    throw new Error(
+      `Database failed to start (${err?.message || err}). Profiles were NOT deleted. ` +
+        `Fix the error, or only if data is corrupt set FORCE_DB_WIPE=1 and retry.`
+    );
   }
 }

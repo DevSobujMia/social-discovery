@@ -3,6 +3,56 @@ import { prisma } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
 import { success, error, handleApiError } from '@/lib/api-helpers';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+export const fetchCache = 'force-no-store';
+
+function noStore(res: Response) {
+  res.headers.set('Cache-Control', 'private, no-store, no-cache, must-revalidate, max-age=0');
+  res.headers.set('Pragma', 'no-cache');
+  res.headers.set('Expires', '0');
+  return res;
+}
+
+function formatMessages(
+  messages: any[],
+  currentUser: { id: string; profile?: { displayName?: string | null } | null },
+  fallbackRepresentedName: string,
+  otherParticipantUserId?: string | null
+) {
+  return messages.map((m) => {
+    const isOwn = m.senderUserId === currentUser.id;
+    let senderName = 'Unknown';
+    let senderId = m.senderUserId;
+
+    if (isOwn) {
+      senderName = currentUser.profile?.displayName || 'You';
+    } else if (m.sentOnBehalfOf || m.senderStaffId) {
+      senderName = m.onBehalfOf?.profile?.displayName || fallbackRepresentedName;
+      senderId = m.sentOnBehalfOf || otherParticipantUserId || m.senderUserId;
+    } else {
+      senderName = m.senderUser?.profile?.displayName || fallbackRepresentedName;
+    }
+
+    return {
+      id: m.id,
+      conversationId: m.conversationId,
+      content: m.content,
+      contentType: m.contentType,
+      mediaUrl: m.mediaUrl,
+      status: m.status,
+      isAssisted: m.isAssisted,
+      senderName,
+      senderId,
+      senderUserId: m.senderUserId,
+      senderStaffId: m.senderStaffId,
+      sentOnBehalfOf: m.sentOnBehalfOf,
+      isOwn,
+      createdAt: m.createdAt,
+    };
+  });
+}
+
 // GET /api/conversations/[id]/messages — get messages for a conversation
 export async function GET(
   req: NextRequest,
@@ -50,104 +100,85 @@ export async function GET(
       },
     });
 
-    // Latest messages only, then chronological for the UI (Messenger style).
-    // orderBy asc + take would return the OLDEST N and hide new messages.
-    const recent = await prisma.message.findMany({
-      where: {
-        conversationId: id,
-        deletedAt: null,
-      },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-      include: {
-        senderUser: {
-          select: {
-            id: true,
-            profile: {
-              select: { displayName: true },
+    // Do not filter deletedAt: null — PGlite/Prisma can drop inbound staff
+    // rows on that predicate while lastMessagePreview still updates.
+    let recent: any[] = [];
+    try {
+      recent = await prisma.message.findMany({
+        where: { conversationId: id },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+        include: {
+          senderUser: {
+            select: {
+              id: true,
+              profile: { select: { displayName: true } },
+            },
+          },
+          onBehalfOf: {
+            select: {
+              id: true,
+              profile: { select: { displayName: true } },
             },
           },
         },
-        onBehalfOf: {
-          select: {
-            id: true,
-            profile: {
-              select: { displayName: true },
-            },
+      });
+    } catch {
+      recent = await prisma.message.findMany({
+        where: { conversationId: id },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+      });
+    }
+    const messages = recent.filter((m) => !m.deletedAt).slice().reverse();
+
+    // Read receipts must never fail the history fetch — a PGlite write lock
+    // on poll was wiping the customer thread in the UI.
+    if (participant.unreadCount > 0) {
+      try {
+        await prisma.conversationParticipant.update({
+          where: { id: participant.id },
+          data: {
+            unreadCount: 0,
+            lastReadAt: new Date(),
           },
-        },
-      },
-    });
-    const messages = recent.slice().reverse();
-
-    // Mark as read
-    await prisma.conversationParticipant.update({
-      where: { id: participant.id },
-      data: {
-        unreadCount: 0,
-        lastReadAt: new Date(),
-      },
-    });
-
-    // Update message statuses to read (both normal user messages and staff-assisted messages)
-    await prisma.message.updateMany({
-      where: {
-        conversationId: id,
-        OR: [
-          { senderUserId: { not: currentUser.id } },
-          { senderUserId: null },
-        ],
-        status: { in: ['sent', 'delivered'] },
-      },
-      data: { status: 'read' },
-    });
+        });
+        await prisma.message.updateMany({
+          where: {
+            conversationId: id,
+            OR: [
+              { senderUserId: { not: currentUser.id } },
+              { senderUserId: null },
+            ],
+            status: { in: ['sent', 'delivered'] },
+          },
+          data: { status: 'read' },
+        });
+      } catch {
+        // History still returns below.
+      }
+    }
 
     const otherParticipant = conversation?.participants.find(p => p.userId !== currentUser.id);
     const fallbackRepresentedName = conversation?.representedProfileUser?.profile?.displayName
       || otherParticipant?.user?.profile?.displayName
       || 'Profile';
 
-    const formatted = messages.map(m => {
-      const isOwn = m.senderUserId === currentUser.id;
-      let senderName = 'Unknown';
-      let senderId = m.senderUserId;
+    const formatted = formatMessages(
+      messages,
+      currentUser,
+      fallbackRepresentedName,
+      otherParticipant?.userId || conversation?.representedProfileUserId
+    );
 
-      if (isOwn) {
-        senderName = currentUser.profile?.displayName || 'You';
-      } else {
-        // If message was sent on behalf of a represented profile OR sent by staff
-        if (m.sentOnBehalfOf || m.senderStaffId) {
-          senderName = m.onBehalfOf?.profile?.displayName || fallbackRepresentedName;
-          senderId = m.sentOnBehalfOf || otherParticipant?.userId || m.senderUserId;
-        } else {
-          senderName = m.senderUser?.profile?.displayName || fallbackRepresentedName;
-        }
-      }
-
-      return {
-        id: m.id,
-        conversationId: m.conversationId,
-        content: m.content,
-        contentType: m.contentType,
-        mediaUrl: m.mediaUrl,
-        status: m.status,
-        isAssisted: m.isAssisted,
-        senderName,
-        senderId,
-        senderUserId: m.senderUserId,
-        senderStaffId: m.senderStaffId,
-        sentOnBehalfOf: m.sentOnBehalfOf,
-        isOwn,
-        createdAt: m.createdAt,
-      };
-    });
-
-    return success({
-      messages: formatted,
-      hasMore: messages.length === limit,
-      nextCursor: messages.length === limit ? messages[0]?.id : null,
-    });
+    return noStore(
+      success({
+        messages: formatted,
+        hasMore: messages.length === limit,
+        nextCursor: messages.length === limit ? messages[0]?.id : null,
+      })
+    );
   } catch (err) {
     return handleApiError(err);
   }
@@ -217,40 +248,15 @@ export async function POST(
     }
 
     // -------------------------------------------------------------
-    // Verification Gatekeeper & Admin Reply Unlock
+    // Phone-first gate: verify mobile before any customer message.
+    // That number is also the returning-visitor login (no password).
     // -------------------------------------------------------------
-    // If lead is verified: unlimited messaging.
-    // If unverified: 2 free messages allowed.
-    // If >= 2 messages sent without a staff/counterpart reply: requires verification.
-    // If admin/profile replied: customer is unlocked to reply back!
     if (!currentUser.isVerifiedLead) {
-      const lastStaffMessage = await prisma.message.findFirst({
-        where: {
-          conversationId: id,
-          OR: [
-            { senderStaffId: { not: null } },
-            { sentOnBehalfOf: { not: null } },
-            { senderUserId: { not: currentUser.id } },
-          ],
-        },
-        orderBy: { createdAt: 'desc' },
-      });
-
-      const customerMessageCount = await prisma.message.count({
-        where: {
-          conversationId: id,
-          senderUserId: currentUser.id,
-          ...(lastStaffMessage ? { createdAt: { gt: lastStaffMessage.createdAt } } : {}),
-        },
-      });
-
-      if (customerMessageCount >= 2) {
-        return error(
-          'Verification required to continue chatting. Please verify with Mobile, WhatsApp, or Telegram.',
-          403,
-          { code: 'VERIFICATION_REQUIRED', messageCount: customerMessageCount }
-        );
-      }
+      return error(
+        'Verify your mobile number before messaging. This number is also how you log back in later.',
+        403,
+        { code: 'VERIFICATION_REQUIRED', messageCount: 0 }
+      );
     }
 
     const effectiveContentType = (contentType === 'image' || contentType === 'video') ? contentType : (mediaUrl ? 'image' : 'text');

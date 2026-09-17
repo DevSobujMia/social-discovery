@@ -3,6 +3,15 @@ import { prisma } from '@/lib/db';
 import { requireStaff } from '@/lib/auth';
 import { success, error, handleApiError } from '@/lib/api-helpers';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
+function noStore(res: Response) {
+  res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  res.headers.set('Pragma', 'no-cache');
+  return res;
+}
+
 // GET /api/admin/conversations/[id]/messages
 export async function GET(
   req: NextRequest,
@@ -90,22 +99,26 @@ export async function GET(
       conversation.customerUserId ||
       conversation.participants.find((p) => p.user.profileOwnerType === 'self')?.userId;
 
-    await prisma.conversationParticipant.updateMany({
-      where: {
-        conversationId: id,
-        ...(customerUserId ? { userId: { not: customerUserId } } : {}),
-      },
-      data: { unreadCount: 0, lastReadAt: new Date() },
-    });
+    try {
+      await prisma.conversationParticipant.updateMany({
+        where: {
+          conversationId: id,
+          ...(customerUserId ? { userId: { not: customerUserId } } : {}),
+        },
+        data: { unreadCount: 0, lastReadAt: new Date() },
+      });
 
-    await prisma.message.updateMany({
-      where: {
-        conversationId: id,
-        senderStaffId: null,
-        status: { in: ['sent', 'delivered'] },
-      },
-      data: { status: 'read' },
-    });
+      await prisma.message.updateMany({
+        where: {
+          conversationId: id,
+          senderStaffId: null,
+          status: { in: ['sent', 'delivered'] },
+        },
+        data: { status: 'read' },
+      });
+    } catch {
+      // Never fail the inbox thread because a read-receipt write locked.
+    }
 
     // Resolve customer and represented profile
     const customerPart = conversation.participants.find(p => p.user.profileOwnerType === 'self')
@@ -119,8 +132,9 @@ export async function GET(
 
     const assignedAgent = customerPart?.user.assignments?.[0]?.agent || null;
 
-    return success({
-      conversation: {
+    return noStore(
+      success({
+        conversation: {
         id: conversation.id,
         status: conversation.status,
         type: conversation.type,
@@ -172,7 +186,8 @@ export async function GET(
           deletedAt: m.deletedAt,
         };
       }),
-    });
+    })
+    );
   } catch (err) {
     return handleApiError(err);
   }
@@ -296,12 +311,12 @@ export async function POST(
           operatorDisplayName: staff.displayName,
           sentOnBehalfOf: targetProfileId,
           messageId: message.id,
-          contentPreview: content.trim().substring(0, 100),
+          contentPreview: effectiveContent.substring(0, 100),
         },
       },
     });
 
-    return success(message, 201);
+    return noStore(success(message, 201));
   } catch (err) {
     return handleApiError(err);
   }

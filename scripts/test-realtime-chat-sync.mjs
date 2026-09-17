@@ -76,15 +76,23 @@ async function run() {
   const convId = startRes.body?.data?.conversationId;
   check('Conversation ID returned', !!convId, convId);
 
-  // 3. Visitor sends multiline message
+  // 3. Name + phone creates the account/lead and sends the first message
+  const phone = `+1555${String(Date.now()).slice(-7)}`;
   const multilineCustomerMessage = 'Hello Emma!\nI am visiting next month.\nWould love to connect!';
-  const sendRes = await visitor.request(`/api/conversations/${convId}/messages`, {
+  const phoneRes = await visitor.request('/api/auth/phone', {
     method: 'POST',
-    body: { content: multilineCustomerMessage, contentType: 'text' },
+    body: {
+      name: visitorName,
+      phone,
+      conversationId: convId,
+      firstMessage: multilineCustomerMessage,
+    },
   });
-  check('Customer sends multiline message', sendRes.body?.success === true, `status ${sendRes.status}`);
-  check('Customer message preserves newlines', sendRes.body?.data?.message?.content.includes('\n'));
-  check('Customer message marked isOwn = true', sendRes.body?.data?.message?.isOwn === true);
+  check('Visitor registers with name + phone', phoneRes.body?.success === true, `status ${phoneRes.status}`);
+  check('Phone register marks verified lead', phoneRes.body?.data?.user?.isVerifiedLead === true);
+  check('First message sent with register', !!phoneRes.body?.data?.message);
+  check('Customer message preserves newlines', phoneRes.body?.data?.message?.content?.includes('\n'));
+  check('Customer message marked isOwn = true', phoneRes.body?.data?.message?.isOwn === true);
 
   // 4. Staff logs in to Admin CRM
   const staff = createSession('staff');
@@ -135,6 +143,15 @@ async function run() {
   check('Admin reply recognized as isOwn = false', adminMsg?.isOwn === false);
   check('Admin reply senderName is model name', adminMsg?.senderName === target.displayName, adminMsg?.senderName);
   check('Admin reply has senderStaffId', !!adminMsg?.senderStaffId);
+
+  const customerPollAgain = await visitor.request(`/api/conversations/${convId}/messages`);
+  const customerMsgsAgain = customerPollAgain.body?.data?.messages ?? [];
+  check(
+    'Second customer poll keeps full history',
+    customerMsgsAgain.length >= customerMsgs.length &&
+      customerMsgsAgain.some((m) => m.content === multilineAdminReply),
+    `${customerMsgsAgain.length} messages`
+  );
 
   // 10. Test Mark-All-Read endpoint
   const markAllRes = await staff.request('/api/admin/conversations/mark-all-read', { method: 'POST' });

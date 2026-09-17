@@ -35,6 +35,47 @@ export interface Market {
   excludeLocals: boolean;
 }
 
+/** Country + city options on the customer profile. */
+export const PROFILE_LOCATIONS: { country: string; cities: string[] }[] = [
+  {
+    country: 'United Arab Emirates',
+    cities: ['Dubai', 'Abu Dhabi', 'Sharjah', 'Ajman'],
+  },
+  {
+    country: 'Saudi Arabia',
+    cities: ['Riyadh', 'Jeddah', 'Dammam', 'Khobar'],
+  },
+  { country: 'Qatar', cities: ['Doha'] },
+  { country: 'Kuwait', cities: ['Kuwait City'] },
+  { country: 'Bahrain', cities: ['Manama'] },
+  { country: 'Oman', cities: ['Muscat'] },
+  {
+    country: 'India',
+    cities: ['Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai', 'Kolkata'],
+  },
+  {
+    country: 'Pakistan',
+    cities: ['Karachi', 'Lahore', 'Islamabad'],
+  },
+  {
+    country: 'Bangladesh',
+    cities: ['Dhaka', 'Chittagong'],
+  },
+  {
+    country: 'United Kingdom',
+    cities: ['London', 'Manchester'],
+  },
+  {
+    country: 'United States',
+    cities: ['New York', 'Los Angeles'],
+  },
+];
+
+export function citiesForCountry(country?: string | null): string[] {
+  if (!country) return [];
+  return PROFILE_LOCATIONS.find((row) => row.country === country)?.cities ?? [];
+}
+
 export const MARKETS: Market[] = [
   {
     countryCode: 'AE',
@@ -203,7 +244,24 @@ export function inferCountryFromPhone(phone?: string | null): string | null {
   return null;
 }
 
-/** Mask a contact value for display in the admin list. */
+/** Hide the last 4 digits only. Keeps `+`, spaces, and the visible prefix. */
+export function maskPhoneLast4(value: string): string {
+  if (!value) return '';
+  let remaining = 4;
+  let out = '';
+  for (let i = value.length - 1; i >= 0; i--) {
+    const ch = value[i];
+    if (remaining > 0 && /\d/.test(ch)) {
+      out = `•${out}`;
+      remaining -= 1;
+    } else {
+      out = `${ch}${out}`;
+    }
+  }
+  return out;
+}
+
+/** Mask a contact value for display in the admin list and public profile. */
 export function maskContact(kind: string, value: string): string {
   if (kind === 'telegram' && !value.startsWith('+')) {
     return value.startsWith('@') ? value : `@${value}`;
@@ -214,8 +272,7 @@ export function maskContact(kind: string, value: string): string {
     const head = name.slice(0, 2);
     return `${head}${'•'.repeat(Math.max(1, name.length - 2))}@${domain}`;
   }
-  if (value.length <= 5) return value;
-  return `${value.slice(0, value.length - 4)}${'•'.repeat(2)}${value.slice(-2)}`;
+  return maskPhoneLast4(value);
 }
 
 // ============================================================

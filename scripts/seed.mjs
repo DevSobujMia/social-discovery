@@ -7,7 +7,7 @@ async function main() {
   console.log('🌱 Starting database seed...');
 
   // 1. Create Super Admin
-  const adminPasswordHash = await bcrypt.hash('Admin@123456', 10);
+  const adminPasswordHash = await bcrypt.hash('Dev007', 10);
   const admin = await prisma.staffAccount.upsert({
     where: { email: 'admin@heartlink.com' },
     update: { passwordHash: adminPasswordHash, role: 'admin', status: 'active' },
@@ -107,7 +107,7 @@ async function main() {
       city: 'London',
       bio: 'Architect, passionate watercolor painter, and avid globe-trotter. Seeking genuine intellectual sparks and someone who loves weekend gallery walks and espresso.',
       interests: ['Architecture', 'Art', 'Travel', 'Coffee', 'Design'],
-      lookingFor: 'life_partner',
+      lookingFor: 'travel_partner',
       birthDate: new Date('1997-04-12'),
       photo: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=800&auto=format&fit=crop&q=80',
     },
@@ -119,7 +119,7 @@ async function main() {
       city: 'San Francisco',
       bio: 'Biomedical researcher by day, jazz pianist by night. I value deep conversations, empathy, and weekend hiking trips along the coast.',
       interests: ['Piano', 'Hiking', 'Science', 'Jazz', 'Cooking'],
-      lookingFor: 'relationship',
+      lookingFor: 'travel_partner',
       birthDate: new Date('1994-09-23'),
       photo: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=800&auto=format&fit=crop&q=80',
     },
@@ -131,7 +131,7 @@ async function main() {
       city: 'Dhaka',
       bio: 'Tech entrepreneur & literature enthusiast. Looking for someone grounded, ambitious, and with a kind heart. Love tea sessions, classic books, and stargazing.',
       interests: ['Literature', 'Startups', 'Tea', 'Philosophy', 'Photography'],
-      lookingFor: 'life_partner',
+      lookingFor: 'travel_partner',
       birthDate: new Date('1998-11-05'),
       photo: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=800&auto=format&fit=crop&q=80',
     },
@@ -143,7 +143,7 @@ async function main() {
       city: 'Vancouver',
       bio: 'Landscape photographer and wilderness guide. Looking for a partner who isn’t afraid of a mountain breeze, good campfires, and spontaneous road trips.',
       interests: ['Photography', 'Wilderness', 'Camping', 'Fitness', 'Cinema'],
-      lookingFor: 'dating',
+      lookingFor: 'travel_partner',
       birthDate: new Date('1993-02-18'),
       photo: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=800&auto=format&fit=crop&q=80',
     },
@@ -155,7 +155,7 @@ async function main() {
       city: 'Barcelona',
       bio: 'Culinary stylist and botanical illustrator. Food is my love language. Looking for meaningful connection, laughter, and shared travel adventures.',
       interests: ['Gastronomy', 'Illustration', 'Sailing', 'Wine', 'Yoga'],
-      lookingFor: 'relationship',
+      lookingFor: 'travel_partner',
       birthDate: new Date('1996-07-30'),
       photo: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=800&auto=format&fit=crop&q=80',
     },
@@ -167,7 +167,7 @@ async function main() {
       city: 'Sydney',
       bio: 'Fintech product lead & surfer. Enthusiastic about sustainable living, beach sunrises, and great storytelling podcasts.',
       interests: ['Surfing', 'Tech', 'Sustainability', 'Fitness', 'Podcasts'],
-      lookingFor: 'relationship',
+      lookingFor: 'travel_partner',
       birthDate: new Date('1995-12-14'),
       photo: 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=800&auto=format&fit=crop&q=80',
     },
@@ -179,7 +179,7 @@ async function main() {
       city: 'New York',
       bio: 'Contemporary gallery curator & boutique travel writer. Looking for a partner who values deep culture, creative ambition, and spontaneous weekends in Paris or Kyoto.',
       interests: ['Art History', 'Boutique Travel', 'Gastronomy', 'Architecture', 'Writing'],
-      lookingFor: 'life_partner',
+      lookingFor: 'travel_partner',
       birthDate: new Date('1995-05-18'),
       photo: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=800&auto=format&fit=crop&q=80',
       profileOwnerType: 'staff_assisted',
@@ -188,10 +188,10 @@ async function main() {
         ageRangeMax: 40,
         preferredGender: 'male',
         preferredCountries: ['United States', 'United Kingdom', 'Canada'],
-        relationshipIntention: 'life_partner',
+        relationshipIntention: 'travel_partner',
         travelDestination: 'Europe & Japan',
         interests: ['Art', 'Culture', 'Travel', 'Fine Dining'],
-        additionalNotes: 'Authorized Heartlink matchmaking staff to assist in communication and curate high-compatibility introductions.'
+        additionalNotes: 'Authorized City Host matchmaking staff to assist in communication and curate high-compatibility introductions.'
       }
     },
   ];
@@ -280,13 +280,27 @@ async function main() {
           agentId: agentAlex.id,
           assignedBy: admin.id,
           status: 'active',
-          notes: 'High-profile entrepreneur lead looking for life partner.',
+          notes: 'Travel meetup lead — looking for a local guide.',
         },
       });
     }
   }
 
-  console.log(`✅ Seeded ${mockUsers.length} rich discover profiles with agent assignments`);
+  // Dating-era demo personas stay in the DB for CRM tests but must not
+  // appear on the public meetup feed.
+  await prisma.profile.updateMany({
+    where: {
+      user: {
+        email: { in: mockUsers.map((u) => u.email) },
+      },
+    },
+    data: {
+      isVisible: false,
+      lookingFor: 'travel_partner',
+    },
+  });
+
+  console.log(`✅ Seeded ${mockUsers.length} legacy demo profiles (hidden from meetup feed)`);
 
   // 5. Seed a demo conversation between Daniel and Elena
   const daniel = await prisma.user.findUnique({ where: { email: 'daniel.kim@example.com' } });
@@ -457,7 +471,7 @@ async function main() {
       bio: 'Flying to Dubai soon and I would rather not do every evening alone. Looking for someone local who knows the quieter side of the city.',
       interests: ['Cafes', 'Beach walks', 'Photography', 'Food', 'Art'],
       birthDate: new Date('1998-03-14'),
-      photo: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=800&auto=format&fit=crop&q=80',
+      photo: '/api/uploads/profiles/w_blonde_mirror_63fefa87-5295-4fda-819d-534145fb0a60.png',
       trip: {
         country: 'United Arab Emirates',
         city: 'Dubai',
@@ -475,7 +489,7 @@ async function main() {
       bio: 'Planning a Dubai trip soon. Want someone who actually lives there — not another tourist — for dinner and a walk.',
       interests: ['Brunch', 'Design', 'Museums', 'Travel', 'Wine'],
       birthDate: new Date('2000-07-22'),
-      photo: 'https://images.unsplash.com/photo-1531746020798-e6953c6e8e04?w=800&auto=format&fit=crop&q=80',
+      photo: '/api/uploads/profiles/w_blonde_bookstore_0315588a-f3ab-4045-b89d-9c16b0675dcd.jpg',
       trip: {
         country: 'United Arab Emirates',
         city: 'Dubai',
@@ -493,7 +507,7 @@ async function main() {
       bio: 'Heading to Dubai soon for a short stay. Prefer calm conversation over loud clubs.',
       interests: ['Fashion', 'Coffee', 'Walking', 'Architecture', 'Travel'],
       birthDate: new Date('1995-11-02'),
-      photo: 'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=800&auto=format&fit=crop&q=80',
+      photo: '/api/uploads/profiles/w_brunette_cafe_4b99c9a7-0bef-44cd-be26-3231ed4b81a8.png',
       trip: {
         country: 'United Arab Emirates',
         city: 'Dubai',
@@ -511,7 +525,7 @@ async function main() {
       bio: 'Coming to Dubai soon. If you know hidden cafes in Marina or JLT, say hi.',
       interests: ['Cafes', 'Yoga', 'Markets', 'Photography', 'Travel'],
       birthDate: new Date('1997-05-09'),
-      photo: 'https://images.unsplash.com/photo-1487412720507-e7ab37603c6f?w=800&auto=format&fit=crop&q=80',
+      photo: '/api/uploads/profiles/w_blonde_street_eb7cd076-c2de-4c55-ba5f-1c4c23de8b14.jpg',
       trip: {
         country: 'United Arab Emirates',
         city: 'Dubai',
@@ -529,7 +543,7 @@ async function main() {
       bio: 'Abu Dhabi soon — Louvre, Corniche, maybe a desert evening. Company makes it better.',
       interests: ['Museums', 'Desert', 'Reading', 'Food', 'Travel'],
       birthDate: new Date('1999-09-30'),
-      photo: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=800&auto=format&fit=crop&q=80',
+      photo: '/api/uploads/profiles/w_brunette_dinner_38dcc320-bad4-4f74-9c0b-a5403febecb7.png',
       trip: {
         country: 'United Arab Emirates',
         city: 'Abu Dhabi',
@@ -547,13 +561,108 @@ async function main() {
       bio: 'Riyadh soon for a short trip. Looking for someone respectful to explore with after meetings.',
       interests: ['Art', 'Coffee', 'Walking', 'Design', 'Travel'],
       birthDate: new Date('1996-01-19'),
-      photo: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=800&auto=format&fit=crop&q=80',
+      photo: '/api/uploads/profiles/16ca3052-480b-4d07-81f2-9e14c4799ff1.jpg',
       trip: {
         country: 'Saudi Arabia',
         city: 'Riyadh',
         fromDate: day(8),
         toDate: day(15),
         note: 'Traveling soon to Riyadh.',
+      },
+    },
+    {
+      email: 'ava.brooks.travel@example.com',
+      displayName: 'Ava',
+      gender: 'female',
+      country: 'United States',
+      city: 'Austin',
+      bio: 'Austin-based designer heading to Dubai soon. Love quiet cafes, rooftop sunsets, and meeting locals who know the city beyond the tourist map.',
+      interests: ['Cafes', 'Design', 'Photography', 'Walking', 'Travel'],
+      birthDate: new Date('2000-04-18'),
+      lookingFor: 'local_guide',
+      photo: '/api/uploads/profiles/ava-brooks.png',
+      trip: {
+        country: 'United Arab Emirates',
+        city: 'Dubai',
+        fromDate: day(5),
+        toDate: day(16),
+        note: 'First time in Dubai — looking for a local guide for Marina and old town walks.',
+      },
+    },
+    {
+      email: 'ava.miller.travel@example.com',
+      displayName: 'Ava Miller',
+      gender: 'female',
+      country: 'United Kingdom',
+      city: 'Manchester',
+      bio: 'From Manchester, planning a short UAE trip. Prefer genuine company over loud nights — brunch, museums, and easy conversation.',
+      interests: ['Brunch', 'Museums', 'Coffee', 'Travel', 'Art'],
+      birthDate: new Date('1999-08-03'),
+      lookingFor: 'travel_partner',
+      photo: '/api/uploads/profiles/ava-miller.png',
+      trip: {
+        country: 'United Arab Emirates',
+        city: 'Abu Dhabi',
+        fromDate: day(8),
+        toDate: day(18),
+        note: 'Abu Dhabi soon — Louvre, Corniche, and a calm travel partner for the evenings.',
+      },
+    },
+    {
+      email: 'ava.smith.travel@example.com',
+      displayName: 'Ava Smith',
+      gender: 'female',
+      country: 'United States',
+      city: 'Boston',
+      bio: 'Boston creative flying to Dubai for work and a few free days. Looking for someone to explore with — markets, food, and city walks.',
+      interests: ['Food', 'Markets', 'Yoga', 'Photography', 'Travel'],
+      birthDate: new Date('1998-01-22'),
+      lookingFor: 'travel_partner',
+      photo: '/api/uploads/profiles/ava-smith.png',
+      trip: {
+        country: 'United Arab Emirates',
+        city: 'Dubai',
+        fromDate: day(3),
+        toDate: day(12),
+        note: 'Work trip to Dubai with free evenings — open to a travel partner for dinner and walks.',
+      },
+    },
+    {
+      email: 'ava.collins.travel@example.com',
+      displayName: 'Ava Collins',
+      gender: 'female',
+      country: 'United Kingdom',
+      city: 'Edinburgh',
+      bio: 'Edinburgh-based, heading to Riyadh soon. Want a local who can show the quieter side of the city — culture, coffee, and honest conversation.',
+      interests: ['Coffee', 'Culture', 'Walking', 'Books', 'Travel'],
+      birthDate: new Date('1997-06-11'),
+      lookingFor: 'local_guide',
+      photo: '/api/uploads/profiles/ava-collins.png',
+      trip: {
+        country: 'Saudi Arabia',
+        city: 'Riyadh',
+        fromDate: day(6),
+        toDate: day(15),
+        note: 'Riyadh soon — looking for a local guide for culture spots and good coffee.',
+      },
+    },
+    {
+      email: 'ava.bennett.travel@example.com',
+      displayName: 'Ava Bennett',
+      gender: 'female',
+      country: 'United States',
+      city: 'Seattle',
+      bio: 'Seattle local planning Dubai days off after meetings. Friendly, low-drama, and happiest exploring with good company.',
+      interests: ['Hiking', 'Coffee', 'Music', 'Food', 'Travel'],
+      birthDate: new Date('1995-11-29'),
+      lookingFor: 'friendship',
+      photo: '/api/uploads/profiles/ava-bennett.png',
+      trip: {
+        country: 'United Arab Emirates',
+        city: 'Dubai',
+        fromDate: day(10),
+        toDate: day(20),
+        note: 'Dubai for meetings plus free days — open to friendship and easy city exploring.',
       },
     },
     {
@@ -565,7 +674,7 @@ async function main() {
       bio: 'Flying to Dubai soon for fintech meetings & leisure. Looking for great company, sunset dinners in Downtown or Marina.',
       interests: ['Fintech', 'Coffee', 'Architecture', 'Travel', 'Fine Dining'],
       birthDate: new Date('1995-11-14'),
-      photo: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=800&auto=format&fit=crop&q=80',
+      photo: '/api/uploads/profiles/m_liam_park_b7ab04fd-f97b-47ab-b9e5-60fa91d938d7.jpg',
       trip: {
         country: 'United Arab Emirates',
         city: 'Dubai',
@@ -583,7 +692,7 @@ async function main() {
       bio: 'Architect heading to Dubai & Abu Dhabi. Passionate about modern skyline design, art spaces, and pleasant evening conversations.',
       interests: ['Architecture', 'Design', 'Photography', 'Travel', 'Espresso'],
       birthDate: new Date('1993-06-20'),
-      photo: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=800&auto=format&fit=crop&q=80',
+      photo: '/api/uploads/profiles/m_marcus_bridge_e06bdc1e-a827-413f-a2e2-c697ff85016b.jpg',
       trip: {
         country: 'United Arab Emirates',
         city: 'Dubai',
@@ -601,7 +710,7 @@ async function main() {
       bio: 'Visiting Abu Dhabi and Dubai soon. Enjoy waterfront walks, jazz lounges, and authentic culinary experiences.',
       interests: ['Jazz', 'Piano', 'Hiking', 'Science', 'Travel'],
       birthDate: new Date('1994-09-23'),
-      photo: 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=800&auto=format&fit=crop&q=80',
+      photo: '/api/uploads/profiles/m_daniel_library_773fdff4-88a3-4f25-8e85-480886c5e180.jpg',
       trip: {
         country: 'United Arab Emirates',
         city: 'Abu Dhabi',
@@ -619,7 +728,7 @@ async function main() {
       bio: 'Creative director traveling to Dubai. Would love to connect with someone grounded for dinner and desert sunset views.',
       interests: ['Art', 'Design', 'Brunch', 'Travel', 'Cinema'],
       birthDate: new Date('1996-04-18'),
-      photo: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?w=800&auto=format&fit=crop&q=80',
+      photo: '/api/uploads/profiles/m_alex_cafe_0876fcda-5312-4b94-af55-b1131f80286e.jpg',
       trip: {
         country: 'United Arab Emirates',
         city: 'Dubai',
@@ -637,7 +746,7 @@ async function main() {
       bio: 'Entrepreneur visiting the Emirates for a couple of weeks. Looking for friendly locals to share coffee and interesting conversations.',
       interests: ['Entrepreneurship', 'Fitness', 'Sailing', 'Travel', 'Culture'],
       birthDate: new Date('1992-08-12'),
-      photo: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=800&auto=format&fit=crop&q=80',
+      photo: '/api/uploads/profiles/m_lucas_coastal_750a9480-228e-452e-99a5-dd4afcccf591.jpg',
       trip: {
         country: 'United Arab Emirates',
         city: 'Dubai',
@@ -655,7 +764,7 @@ async function main() {
       bio: 'Heading to Riyadh and Dubai soon. Appreciate good food, historical architecture, and honest relaxed conversations.',
       interests: ['Gastronomy', 'Wine', 'Architecture', 'Travel', 'Art'],
       birthDate: new Date('1997-02-15'),
-      photo: 'https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=800&auto=format&fit=crop&q=80',
+      photo: '/api/uploads/profiles/m_julian_gallery_7f52c47e-be08-4b14-8322-254aaab82cc2.jpg',
       trip: {
         country: 'Saudi Arabia',
         city: 'Riyadh',
@@ -740,6 +849,28 @@ async function main() {
     const profile = await prisma.profile.findUnique({ where: { userId: user.id } });
     if (!profile) continue;
 
+    // Keep curated local photos attached even when seed re-runs after a wipe.
+    const primary = await prisma.profilePhoto.findFirst({
+      where: { profileId: profile.id, isPrimary: true },
+    });
+    if (primary) {
+      await prisma.profilePhoto.update({
+        where: { id: primary.id },
+        data: { filePath: u.photo },
+      });
+    } else {
+      await prisma.profilePhoto.create({
+        data: {
+          profileId: profile.id,
+          filePath: u.photo,
+          isPrimary: true,
+          sortOrder: 0,
+          uploadedBy: 'staff',
+          uploadedByStaffId: admin.id,
+        },
+      });
+    }
+
     await prisma.travelPlan.deleteMany({ where: { profileId: profile.id } });
     await prisma.travelPlan.create({
       data: {
@@ -749,6 +880,7 @@ async function main() {
         fromDate: u.trip.fromDate,
         toDate: u.trip.toDate,
         note: u.trip.note,
+        photoUrl: u.photo,
         isActive: true,
       },
     });

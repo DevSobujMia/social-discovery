@@ -9,7 +9,7 @@ import {
 import { success, handleApiError } from '@/lib/api-helpers';
 import { attachIdentity, refreshLead } from '@/lib/leads';
 import { mergeDeviceMeta } from '@/lib/device-meta';
-import { canonicalCity, findMarket, inferLanguage, resolveGeo } from '@/lib/market';
+import { findMarket, inferLanguage, resolveGeo } from '@/lib/market';
 
 /**
  * POST /api/auth/guest
@@ -46,7 +46,6 @@ export async function POST(req: NextRequest) {
 
     if (!user) {
       isNewLead = true;
-      const parsedAge = age ? parseInt(String(age), 10) : null;
       const cleanName = (name && String(name).trim()) || 'Visitor';
 
       user = await prisma.user.create({
@@ -55,21 +54,14 @@ export async function POST(req: NextRequest) {
           status: 'active',
           isVerifiedLead: false,
           leadStage: 'incomplete',
-          age: parsedAge && !isNaN(parsedAge) ? parsedAge : undefined,
           geoCountry: geo.countryCode,
           geoCity: geo.city,
           language: market ? market.languages[0] : inferLanguage(null),
           profile: {
             create: {
               displayName: cleanName,
-              gender: gender === 'male' || gender === 'female' ? gender : undefined,
-              lookingFor: lookingFor || 'travel_partner',
-              country: market?.countryName || 'United Arab Emirates',
-              city: geo.city || undefined,
-              bio: 'Inbound Ad Lead',
+              bio: null,
               isVerified: false,
-              // Ad leads are people to follow up with, not profiles to browse.
-              // Discovery only ever shows the profiles the operator curates.
               isVisible: false,
             },
           },
@@ -80,37 +72,6 @@ export async function POST(req: NextRequest) {
           },
         },
       });
-
-      // Save the search criteria the ad implied, so the operator can see what
-      // this person was actually looking for.
-      if (lookingFor || preferredGender || gender || parsedAge) {
-        const staff = await prisma.staffAccount.findFirst();
-        if (staff) {
-          const want =
-            preferredGender === 'male' || preferredGender === 'female'
-              ? preferredGender
-              : lookingFor === 'male' || lookingFor === 'female'
-                ? lookingFor
-                : undefined;
-          await prisma.customerRequirements
-            .create({
-              data: {
-                userId: user.id,
-                preferredGender: want,
-                relationshipIntention:
-                  lookingFor === 'male' || lookingFor === 'female'
-                    ? 'travel_partner'
-                    : lookingFor || 'travel_partner',
-                travelDestination: canonicalCity(adCity) || geo.city || undefined,
-                preferredCountries: market ? [market.countryName] : [],
-                createdById: staff.id,
-              },
-            })
-            .catch(() => {
-              // Requirements are supplementary; never fail the funnel on them.
-            });
-        }
-      }
 
       if (utm) {
         let campaignId: string | undefined = undefined;
@@ -161,10 +122,6 @@ export async function POST(req: NextRequest) {
       }
 
       const userUpdate: Record<string, unknown> = {};
-      if (age) {
-        const parsedAge = parseInt(String(age), 10);
-        if (!isNaN(parsedAge)) userUpdate.age = parsedAge;
-      }
       if (geo.countryCode && !user.geoCountry) userUpdate.geoCountry = geo.countryCode;
       if (geo.city && !user.geoCity) userUpdate.geoCity = geo.city;
 
