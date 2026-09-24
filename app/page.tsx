@@ -3292,6 +3292,7 @@ export default function AppHome() {
                               <h3 className="text-sm font-bold text-white tracking-tight truncate group-hover:text-brand-300 transition">
                                 {activeChat.participant.displayName}
                               </h3>
+                              <span className="text-xs shrink-0" title="Germany">🇩🇪</span>
                               {activeChat.participant.isVerified ? (
                                 <ShieldCheck className="w-4 h-4 text-sky-400 shrink-0 inline-block drop-shadow-[0_0_6px_rgba(56,189,248,0.5)]" />
                               ) : null}
@@ -3303,20 +3304,14 @@ export default function AppHome() {
                                   Online now
                                 </p>
                               ) : activeChat.participant.lastActiveAt ? (
-                                <p className="text-[11px] text-surface-400 font-medium">
-                                  Active {lastSeenTime(activeChat.participant.lastActiveAt)}
+                                <p className="text-[11px] text-surface-400 font-medium flex items-center gap-1 truncate">
+                                  <Plane className="w-3 h-3 text-brand-400 shrink-0" />
+                                  <span>Traveler in your city · Active {lastSeenTime(activeChat.participant.lastActiveAt)}</span>
                                 </p>
-                              ) : activeChat.participant.travelCity ? (
-                                <TrustBadges
-                                  visitingCity={activeChat.participant.travelCity}
-                                  inViewerCity={Boolean(
-                                    viewerCity &&
-                                      activeChat.participant.travelCity.toLowerCase() === viewerCity.toLowerCase()
-                                  )}
-                                />
                               ) : (
-                                <p className="text-[11px] text-surface-400 font-medium">
-                                  {activeChat.participant.isVerified ? 'Verified traveller' : 'Travelling soon'}
+                                <p className="text-[11px] text-surface-400 font-medium flex items-center gap-1">
+                                  <Plane className="w-3 h-3 text-brand-400 shrink-0" />
+                                  <span>Traveler in your city</span>
                                 </p>
                               )}
                             </div>

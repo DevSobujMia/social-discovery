@@ -173,18 +173,13 @@ function FoundTripCard({
         </div>
       </div>
 
-      <div className="pt-2.5 pb-2 px-0.5 flex items-center justify-between gap-1">
-        <div className="flex items-center gap-1 min-w-0">
-          <span className="text-xs sm:text-[13px] font-bold text-white tracking-tight truncate">
-            {firstName}
-            {profile.age ? (
-              <span className="font-semibold text-surface-200">, {profile.age}</span>
-            ) : null}
+      <div className="pt-2.5 pb-2 px-0.5 flex items-center justify-between">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="text-sm font-extrabold text-white tracking-tight truncate">
+            {firstName}{profile.age ? `, ${profile.age}` : ''}
           </span>
+          <span className="text-sm shrink-0 drop-shadow-sm" title="Germany">🇩🇪</span>
         </div>
-        <span className="text-[10px] text-brand-300 font-semibold bg-brand-500/15 px-2 py-0.5 rounded-full border border-brand-500/25 shrink-0">
-          Traveler in your city
-        </span>
       </div>
 
       <button
@@ -1145,7 +1140,7 @@ export default function MatchFunnel({
             <div className="absolute top-3 left-3 right-3 flex items-center justify-between">
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/60 backdrop-blur-md text-[11px] font-bold text-white border border-white/20 shadow-lg">
                 <Plane className="w-3.5 h-3.5 text-accent-teal" />
-                <span>{match.travel?.city ? `Visiting ${match.travel.city}` : 'Upcoming Trip'}</span>
+                <span>Traveler in your city</span>
               </span>
               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/20 backdrop-blur-md text-[10px] font-bold text-emerald-300 border border-emerald-500/40 w-fit">
                 Trip shared
@@ -1162,14 +1157,12 @@ export default function MatchFunnel({
                     {match.age}
                   </span>
                 )}
-                {match.country && (
-                  <span className="text-base">{countryFlag(match.country)}</span>
-                )}
+                <span className="text-base">{countryFlag(match.country || 'Germany')}</span>
               </div>
 
               <p className="text-xs text-surface-300 flex items-center gap-1.5 font-medium mt-0.5">
-                <MapPin className="w-3.5 h-3.5 text-brand-400 shrink-0" />
-                <span>From {[match.city, match.country].filter(Boolean).join(', ') || 'Abroad'}</span>
+                <Plane className="w-3.5 h-3.5 text-brand-400 shrink-0" />
+                <span>Traveler visiting your city</span>
               </p>
             </div>
           </div>
