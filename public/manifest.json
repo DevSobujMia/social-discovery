@@ -2,13 +2,13 @@
   "id": "/",
   "name": "City Host",
   "short_name": "City Host",
-  "description": "Meet travellers visiting your city. Chat on-site, get reply alerts on your home screen.",
+  "description": "Share your trip. Locals in that city find who is visiting and message on City Host.",
   "start_url": "/?source=pwa",
   "scope": "/",
   "display": "standalone",
   "display_override": ["standalone", "browser"],
-  "background_color": "#0f172a",
-  "theme_color": "#0f172a",
+  "background_color": "#020617",
+  "theme_color": "#020617",
   "orientation": "portrait-primary",
   "categories": ["lifestyle", "social", "travel"],
   "lang": "en",
@@ -16,25 +16,31 @@
   "prefer_related_applications": false,
   "icons": [
     {
-      "src": "/icon-192.png",
+      "src": "/icon.svg?v=2",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-192.png?v=2",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icon-512.png",
+      "src": "/icon-512.png?v=2",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icon-192.png",
+      "src": "/icon-192.png?v=2",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "maskable"
     },
     {
-      "src": "/icon-512.png",
+      "src": "/icon-512.png?v=2",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"

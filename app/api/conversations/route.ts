@@ -11,6 +11,14 @@ export async function GET() {
   try {
     const currentUser = await requireUser();
 
+    // Heartbeat: keep user lastActiveAt updated in real-time
+    prisma.user
+      .update({
+        where: { id: currentUser.id },
+        data: { lastActiveAt: new Date() },
+      })
+      .catch(() => {});
+
     const participations = await prisma.conversationParticipant.findMany({
       where: { userId: currentUser.id },
       include: {
@@ -22,7 +30,15 @@ export async function GET() {
                 user: {
                   include: {
                     profile: {
-                      include: { photos: { where: { isPrimary: true }, take: 1 } },
+                      include: {
+                        photos: { orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }], take: 1 },
+                        travelPlans: {
+                          where: { isActive: true, toDate: { gte: new Date() } },
+                          orderBy: { fromDate: 'asc' },
+                          take: 1,
+                          select: { city: true },
+                        },
+                      },
                     },
                   },
                 },
@@ -31,7 +47,15 @@ export async function GET() {
             representedProfileUser: {
               include: {
                 profile: {
-                  include: { photos: { where: { isPrimary: true }, take: 1 } },
+                  include: {
+                    photos: { orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }], take: 1 },
+                    travelPlans: {
+                      where: { isActive: true, toDate: { gte: new Date() } },
+                      orderBy: { fromDate: 'asc' },
+                      take: 1,
+                      select: { city: true },
+                    },
+                  },
                 },
               },
             },
@@ -52,6 +76,10 @@ export async function GET() {
         ? conv.representedProfileUser
         : otherUser;
 
+      const nextTrip = counterpart?.profile?.travelPlans?.[0] || null;
+      const isVerified = Boolean(counterpart?.profile?.isVerified);
+      const travelCity = nextTrip?.city || null;
+
       return {
         id: conv.id,
         type: conv.type,
@@ -70,6 +98,8 @@ export async function GET() {
           unreadCount: p.unreadCount,
           lastActiveAt: counterpart.lastActiveAt,
           profileOwnerType: counterpart.profileOwnerType,
+          isVerified,
+          travelCity,
         } : {
           userId: '',
           displayName: 'Unknown',
@@ -79,6 +109,8 @@ export async function GET() {
           unreadCount: 0,
           lastActiveAt: null,
           profileOwnerType: 'self',
+          isVerified: false,
+          travelCity: null,
         },
         otherUser: counterpart ? {
           id: counterpart.id,
@@ -86,6 +118,8 @@ export async function GET() {
           photo: counterpart.profile?.photos[0]?.filePath || null,
           country: counterpart.profile?.country,
           profileOwnerType: counterpart.profileOwnerType,
+          isVerified,
+          travelCity,
         } : null,
       };
     });
@@ -111,21 +145,38 @@ export async function POST(req: NextRequest) {
       return error('Cannot create conversation with yourself');
     }
 
-    const targetUser = await prisma.user.findUnique({
+    let targetUser = await prisma.user.findUnique({
       where: { id: targetUserId },
       include: { profile: { include: { photos: true } } },
     });
+
+    if (!targetUser && typeof targetUserId === 'string' && targetUserId.startsWith('preview-')) {
+      const previewName = targetUserId.replace(/^preview-/, '').toLowerCase();
+      const matchedProfile = await prisma.profile.findFirst({
+        where: {
+          displayName: { startsWith: previewName, mode: 'insensitive' },
+          isVisible: true,
+          user: { status: 'active' },
+        },
+        include: { user: { include: { profile: { include: { photos: true } } } } },
+      });
+      if (matchedProfile?.user) {
+        targetUser = matchedProfile.user;
+      }
+    }
 
     if (!targetUser || targetUser.status !== 'active') {
       return error('User not found', 404);
     }
 
+    const actualTargetUserId = targetUser.id;
+
     // Check if either user has blocked the other
     const isBlocked = await prisma.blockedUser.findFirst({
       where: {
         OR: [
-          { blockerId: currentUser.id, blockedId: targetUserId },
-          { blockerId: targetUserId, blockedId: currentUser.id },
+          { blockerId: currentUser.id, blockedId: actualTargetUserId },
+          { blockerId: actualTargetUserId, blockedId: currentUser.id },
         ],
       },
     });
@@ -139,7 +190,7 @@ export async function POST(req: NextRequest) {
     let existingConversation = await prisma.conversation.findFirst({
       where: {
         participants: {
-          every: { userId: { in: [currentUser.id, targetUserId] } },
+          every: { userId: { in: [currentUser.id, actualTargetUserId] } },
         },
       },
       include: {
@@ -157,7 +208,7 @@ export async function POST(req: NextRequest) {
 
     if (!existingConversation) {
       // Find or create match if needed
-      const [aId, bId] = [currentUser.id, targetUserId].sort();
+      const [aId, bId] = [currentUser.id, actualTargetUserId].sort();
       let match = await prisma.match.findUnique({
         where: { userAId_userBId: { userAId: aId, userBId: bId } },
       });
@@ -177,11 +228,11 @@ export async function POST(req: NextRequest) {
           matchId: match.id,
           type: isAssisted ? 'assisted' : 'direct',
           customerUserId: isAssisted ? currentUser.id : null,
-          representedProfileUserId: isAssisted ? targetUserId : null,
+          representedProfileUserId: isAssisted ? actualTargetUserId : null,
           participants: {
             create: [
               { userId: currentUser.id },
-              { userId: targetUserId },
+              { userId: actualTargetUserId },
             ],
           },
         },

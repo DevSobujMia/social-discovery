@@ -14,8 +14,8 @@ async function runAudit() {
     process.exit(1);
   }
   
-  const isMatch = await bcrypt.compare('Dev007', admin.passwordHash);
-  console.log(`✅ Admin (${admin.email}) password Dev007 matches:`, isMatch);
+  const isMatch = await bcrypt.compare('123456', admin.passwordHash);
+  console.log(`✅ Admin (${admin.email}) password 123456 matches:`, isMatch);
 
   console.log('--- 2. Testing Profiles in DB for Match Funnel ---');
   const femaleProfiles = await prisma.profile.findMany({

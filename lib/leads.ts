@@ -243,6 +243,7 @@ export async function computeLeadScore(
       geoCountry: true,
       geoCity: true,
       createdAt: true,
+      lastActiveAt: true,
       profile: { select: { displayName: true, gender: true } },
       identities: { select: { kind: true, verifiedAt: true, createdAt: true } },
     },
@@ -308,12 +309,13 @@ export async function computeLeadScore(
   }
 
   const deviceIdentity = user.identities.find((i) => i.kind === 'device');
-  if (
-    deviceIdentity &&
-    Date.now() - new Date(deviceIdentity.createdAt).getTime() > 24 * 60 * 60 * 1000
-  ) {
-    score += 6;
-    reasons.push('Returned on a later day');
+  if (deviceIdentity && user.lastActiveAt) {
+    const createdTime = new Date(deviceIdentity.createdAt).getTime();
+    const lastActiveTime = new Date(user.lastActiveAt).getTime();
+    if (lastActiveTime - createdTime > 24 * 60 * 60 * 1000) {
+      score += 6;
+      reasons.push('Returned on a later day');
+    }
   }
 
   const stage: LeadScoreBreakdown['stage'] =
@@ -330,24 +332,22 @@ export async function computeLeadScore(
 export async function refreshLead(userId: string): Promise<LeadScoreBreakdown> {
   const breakdown = await computeLeadScore(userId);
 
-  const identities = await prisma.leadIdentity.findMany({
-    where: { userId, verifiedAt: { not: null } },
-    select: { kind: true, value: true },
+  const allIdentities = await prisma.leadIdentity.findMany({
+    where: { userId },
+    select: { kind: true, value: true, verifiedAt: true },
   });
 
-  const contactKinds = identities
+  const verifiedIdentities = allIdentities.filter((i) => i.verifiedAt !== null);
+
+  const contactKinds = verifiedIdentities
     .map((i) => i.kind)
     .filter((k): k is IdentityKind => CONTACT_KINDS.includes(k as IdentityKind));
 
-  const phoneish = identities.find(
-    (i) => i.kind === 'whatsapp' || i.kind === 'phone'
-  );
+  const phoneish =
+    verifiedIdentities.find((i) => i.kind === 'whatsapp' || i.kind === 'phone') ||
+    allIdentities.find((i) => i.kind === 'whatsapp' || i.kind === 'phone');
   const phoneCountry = inferCountryFromPhone(phoneish?.value);
 
-  const allIdentities = await prisma.leadIdentity.findMany({
-    where: { userId },
-    select: { kind: true },
-  });
   const available = allIdentities.map((i) => i.kind);
 
   await prisma.user.update({

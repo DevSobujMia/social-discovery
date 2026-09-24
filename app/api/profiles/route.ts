@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
 import { success, error, handleApiError } from '@/lib/api-helpers';
-import { canonicalCity, findMarket, maskPhoneLast4, resolveGeo } from '@/lib/market';
+import { canonicalCity, cityMatchNames, findMarket, maskPhoneLast4, resolveGeo } from '@/lib/market';
 import { refreshLead } from '@/lib/leads';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -225,9 +225,20 @@ export async function GET(req: NextRequest) {
       now.getDate()
     );
 
-    if (onlyTravellers) {
+    const tripCityNames = requestedCity ? cityMatchNames(requestedCity) : [];
+    if (onlyTravellers || tripCityNames.length > 0) {
       where.travelPlans = {
-        some: { isActive: true, toDate: { gte: startOfToday } },
+        some: {
+          isActive: true,
+          toDate: { gte: startOfToday },
+          ...(tripCityNames.length > 0
+            ? {
+                OR: tripCityNames.map((name) => ({
+                  city: { equals: name, mode: 'insensitive' },
+                })),
+              }
+            : {}),
+        },
       };
     }
 
@@ -320,7 +331,11 @@ export async function GET(req: NextRequest) {
         return p.user?.hideContactNumber ? maskPhoneLast4(raw) : raw;
       })(),
       profileOwnerType: p.user?.profileOwnerType || 'self',
-      photo: nextTrip?.photoUrl || p.photos[0]?.filePath || null,
+      photo:
+        p.photos.find((ph) => ph.isPrimary)?.filePath ||
+        p.photos[0]?.filePath ||
+        nextTrip?.photoUrl ||
+        null,
       lastActive: p.user?.lastActiveAt,
       travel: nextTrip
         ? {

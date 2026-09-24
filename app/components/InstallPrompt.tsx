@@ -1,14 +1,23 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Download, Plus, Share, X } from 'lucide-react';
+import { Download, Plus, Share, X, Check, Globe } from 'lucide-react';
+import HeartMark from './HeartMark';
 
 /**
- * Home-screen install prompt.
+ * City Host PWA Install & Home-Screen Shortcut System
  *
- * Timing is the whole trick. Asking on cold arrival gets refused.
- * Soft teaser can appear after a match (low pressure). Full toast arms
- * once they messaged or got a reply — that is when install converts.
+ * Rules:
+ * 1. 1-Click direct install first: When clicked, immediately triggers native
+ *    browser installation prompt without opening any intermediate modals.
+ * 2. Automatic Detection: If the device/browser cannot install in 1 click
+ *    (e.g. iOS Safari, In-App browser, or prompt dismissed/unavailable), the
+ *    button dynamically updates to: "App didn't install? Click to add shortcut"
+ * 3. 1-Tap Shortcut Action: Clicking "Add Shortcut" immediately triggers the native
+ *    device shortcut system (iOS Share Sheet for Add to Home Screen, Chrome intent
+ *    for in-app browsers, or direct browser shortcut).
+ * 4. 100% English: No Bengali or foreign text anywhere.
+ * 5. Standalone Awareness: If already installed, displays verified active state.
  */
 
 interface BeforeInstallPromptEvent extends Event {
@@ -16,21 +25,24 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 }
 
-const DISMISS_KEY = 'heartlink_install_dismissed';
-const DISMISS_DAYS = 14;
+const DISMISS_KEY = 'cityhost_install_dismissed';
+const CHAT_BANNER_DISMISS_KEY = 'cityhost_chat_banner_dismissed';
+const CHAT_DISMISS_COOLDOWN_MS = 3.5 * 60 * 60 * 1000;
+const GENERAL_DISMISS_DAYS = 7;
 
-function isStandalone(): boolean {
+export function isStandalone(): boolean {
   if (typeof window === 'undefined') return false;
   const iosStandalone = (
     window.navigator as Navigator & { standalone?: boolean }
   ).standalone;
   return (
     window.matchMedia('(display-mode: standalone)').matches ||
-    iosStandalone === true
+    iosStandalone === true ||
+    (typeof document !== 'undefined' && document.referrer?.includes('android-app://'))
   );
 }
 
-function isIOS(): boolean {
+export function isIOS(): boolean {
   if (typeof window === 'undefined') return false;
   const ua = window.navigator.userAgent;
   if (/iPhone|iPad|iPod/.test(ua)) return true;
@@ -39,58 +51,65 @@ function isIOS(): boolean {
   );
 }
 
-function isAndroid(): boolean {
+export function isAndroid(): boolean {
   if (typeof window === 'undefined') return false;
   return /Android/i.test(window.navigator.userAgent);
 }
 
-function wasRecentlyDismissed(): boolean {
+export function isInAppBrowser(): boolean {
+  if (typeof window === 'undefined') return false;
+  const ua = window.navigator.userAgent;
+  return /Instagram|FBAN|FBAV|FB_IAB|Facebook|Line\/|TikTok|Bytedance|Snapchat|WhatsApp/i.test(
+    ua
+  );
+}
+
+function wasRecentlyDismissed(key = DISMISS_KEY): boolean {
   if (typeof window === 'undefined') return false;
   try {
-    const raw = window.localStorage.getItem(DISMISS_KEY);
+    const raw = window.localStorage.getItem(key);
     if (!raw) return false;
     const at = parseInt(raw, 10);
     if (isNaN(at)) return false;
-    return Date.now() - at < DISMISS_DAYS * 24 * 60 * 60 * 1000;
+    const cooldown =
+      key === CHAT_BANNER_DISMISS_KEY
+        ? CHAT_DISMISS_COOLDOWN_MS
+        : GENERAL_DISMISS_DAYS * 24 * 60 * 60 * 1000;
+    return Date.now() - at < cooldown;
   } catch {
     return false;
   }
 }
 
 export default function InstallPrompt({
-  armed,
+  armed = true,
   senderName,
   forceVisible = false,
+  permanent = false,
   compact = false,
-  softTeaser = false,
+  bannerMode = false,
 }: {
-  /** Turn on once the lead has a reason to come back (message / reply). */
-  armed: boolean;
-  /** Whose reply arrived, used to make the copy concrete. */
+  armed?: boolean;
   senderName?: string | null;
-  /** Show inside verify modal regardless of reply timing. */
   forceVisible?: boolean;
-  /** Inline card instead of floating toast. */
+  permanent?: boolean;
   compact?: boolean;
-  /** Quieter match-page teaser — still one-click when Chromium allows. */
-  softTeaser?: boolean;
+  bannerMode?: boolean;
 }) {
   const [deferred, setDeferred] = useState<BeforeInstallPromptEvent | null>(null);
-  const [visible, setVisible] = useState(false);
-  const [showIOSGuide, setShowIOSGuide] = useState(false);
+  const [visible, setVisible] = useState(permanent || forceVisible);
+  const [installed, setInstalled] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [shortcutNeeded, setShortcutNeeded] = useState(false);
+  const [hintMessage, setHintMessage] = useState<string | null>(null);
 
+  // Check standalone mode once on client
+  const [isAlreadyInstalled, setIsAlreadyInstalled] = useState(false);
   useEffect(() => {
-    // SW is registered globally via RegisterSW; keep a soft fallback here
-    // for older bundles that only mount InstallPrompt.
-    if (typeof window === 'undefined') return;
-    if (!('serviceWorker' in navigator)) return;
-    if (navigator.serviceWorker.controller) return;
-
-    navigator.serviceWorker.register('/sw.js').catch(() => {
-      // An unavailable service worker only costs us installability.
-    });
+    setIsAlreadyInstalled(isStandalone());
   }, []);
 
+  // Sync with global beforeinstallprompt event
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
@@ -110,44 +129,162 @@ export default function InstallPrompt({
       }
     };
 
+    const onAppInstalled = () => {
+      (window as any).__pwaInstallPrompt = null;
+      setDeferred(null);
+      setInstalled(true);
+      setShortcutNeeded(false);
+      setHintMessage('App installed successfully!');
+      if (!permanent) {
+        setTimeout(() => setVisible(false), 2500);
+      }
+    };
+
     window.addEventListener('beforeinstallprompt', onBeforeInstall);
+    window.addEventListener('cityhost:pwa-prompt-ready', onPromptReady);
     window.addEventListener('heartlink:pwa-prompt-ready', onPromptReady);
+    window.addEventListener('appinstalled', onAppInstalled);
 
     return () => {
       window.removeEventListener('beforeinstallprompt', onBeforeInstall);
+      window.removeEventListener('cityhost:pwa-prompt-ready', onPromptReady);
       window.removeEventListener('heartlink:pwa-prompt-ready', onPromptReady);
+      window.removeEventListener('appinstalled', onAppInstalled);
     };
-  }, []);
+  }, [permanent]);
 
+  // Visibility logic
   useEffect(() => {
-    if (!armed && !forceVisible) return;
-    if (isStandalone()) return;
-    if (!forceVisible && wasRecentlyDismissed()) return;
+    if (permanent) {
+      setVisible(true);
+      return;
+    }
 
     if (forceVisible) {
       setVisible(true);
       return;
     }
 
-    // Soft teaser: show quickly on match page once SW/prompt is ready.
-    // Full toast: wait a beat so it does not fight the chat UI.
-    const delay = softTeaser ? 400 : 1000;
-    const timer = setTimeout(() => setVisible(true), delay);
-    return () => clearTimeout(timer);
-  }, [armed, forceVisible, softTeaser]);
+    if (!armed) {
+      setVisible(false);
+      return;
+    }
+
+    if (isStandalone()) {
+      setVisible(false);
+      return;
+    }
+
+    const dismissKey = bannerMode ? CHAT_BANNER_DISMISS_KEY : DISMISS_KEY;
+    if (wasRecentlyDismissed(dismissKey)) {
+      setVisible(false);
+      return;
+    }
+
+    setVisible(true);
+  }, [armed, forceVisible, bannerMode, permanent]);
 
   const dismiss = useCallback(() => {
+    if (permanent) return;
     setVisible(false);
-    setShowIOSGuide(false);
-    if (forceVisible) return;
+    const dismissKey = bannerMode ? CHAT_BANNER_DISMISS_KEY : DISMISS_KEY;
     try {
-      window.localStorage.setItem(DISMISS_KEY, String(Date.now()));
+      window.localStorage.setItem(dismissKey, String(Date.now()));
     } catch {
-      // Dismissal is a nicety; ignore storage failures.
+      // ignore storage errors
     }
-  }, [forceVisible]);
+  }, [permanent, bannerMode]);
 
-  const install = useCallback(async () => {
+  /**
+   * DIRECT 1-CLICK INSTALL:
+   * First attempt native browser prompt immediately.
+   * If native prompt is not available or rejected/unsupported,
+   * automatically switch to shortcut mode so the user can add a home screen shortcut.
+   */
+  const handleInstallClick = useCallback(async () => {
+    let promptEvent =
+      deferred ||
+      (typeof window !== 'undefined'
+        ? ((window as any).__pwaInstallPrompt as BeforeInstallPromptEvent | undefined)
+        : null);
+
+    // If prompt hasn't arrived on desktop/Android, give it a tiny 250ms breath
+    if (!promptEvent && typeof window !== 'undefined' && !isIOS() && !isInAppBrowser()) {
+      setInstalling(true);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      promptEvent =
+        (window as any).__pwaInstallPrompt as BeforeInstallPromptEvent | undefined;
+      setInstalling(false);
+    }
+
+    // Direct 1-Click Native Install
+    if (promptEvent) {
+      try {
+        await promptEvent.prompt();
+        const choice = await promptEvent.userChoice;
+        if (typeof window !== 'undefined') (window as any).__pwaInstallPrompt = null;
+        setDeferred(null);
+
+        if (choice?.outcome === 'accepted') {
+          setInstalled(true);
+          setHintMessage('App installed successfully!');
+          if (!permanent) setTimeout(() => setVisible(false), 2000);
+          return;
+        }
+
+        // If user dismissed the prompt, switch to shortcut mode
+        setShortcutNeeded(true);
+        setHintMessage('Install canceled. Click "Add Shortcut" to add it to your home screen.');
+        return;
+      } catch (err) {
+        console.warn('Direct prompt failed:', err);
+      }
+    }
+
+    // Direct 1-click install is not supported on this device/browser (e.g. iOS Safari, In-App)
+    // Seamlessly update to Shortcut mode
+    setShortcutNeeded(true);
+
+    // On iOS Safari, immediately trigger the native Share Sheet for frictionless action
+    if (isIOS()) {
+      if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+        try {
+          await navigator.share({
+            title: 'City Host',
+            text: 'City Host — Travellers visiting your city',
+            url: window.location.href,
+          });
+          setHintMessage('In the share menu, tap "Add to Home Screen"');
+          return;
+        } catch {
+          // User closed share sheet
+        }
+      }
+      setHintMessage('Tap the Share icon [↑] below and select "Add to Home Screen"');
+      return;
+    }
+
+    // On In-App Android browser, immediately launch real Chrome
+    if (isInAppBrowser() && isAndroid()) {
+      const host = typeof window !== 'undefined' ? window.location.host : 'cityhost.live';
+      const path = typeof window !== 'undefined' ? window.location.pathname + window.location.search : '/';
+      const intentUrl = `intent://${host}${path}#Intent;scheme=https;package=com.android.chrome;end`;
+      try {
+        window.location.href = intentUrl;
+        setHintMessage('Opening in Chrome to add shortcut...');
+        return;
+      } catch {}
+    }
+
+    setHintMessage('Click "Add Shortcut" below to add City Host to your home screen.');
+  }, [deferred, permanent]);
+
+  /**
+   * ADD SHORTCUT ACTION:
+   * Triggers device shortcut mechanisms directly without multi-step menus.
+   */
+  const handleShortcutClick = useCallback(async () => {
+    // 1. If native prompt became available, try it
     const promptEvent =
       deferred ||
       (typeof window !== 'undefined'
@@ -158,148 +295,210 @@ export default function InstallPrompt({
       try {
         await promptEvent.prompt();
         const choice = await promptEvent.userChoice;
-        if (typeof window !== 'undefined') (window as any).__pwaInstallPrompt = null;
-        setDeferred(null);
-        setVisible(false);
-        if (choice.outcome === 'dismissed') dismiss();
-        return;
-      } catch {
-        // Fall back to guide if prompt was invalidated
-      }
+        if (choice?.outcome === 'accepted') {
+          setInstalled(true);
+          setHintMessage('App installed successfully!');
+          return;
+        }
+      } catch {}
     }
-    setShowIOSGuide(true);
-  }, [deferred, dismiss]);
+
+    // 2. iOS Safari: Native share sheet opens the Add to Home Screen action
+    if (isIOS()) {
+      if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+        try {
+          await navigator.share({
+            title: 'City Host',
+            text: 'City Host — Travellers visiting your city',
+            url: window.location.href,
+          });
+          setHintMessage('In the share sheet, tap "Add to Home Screen"');
+          return;
+        } catch {}
+      }
+      setHintMessage('Tap Share [↑] in Safari, then tap "Add to Home Screen"');
+      return;
+    }
+
+    // 3. Android In-App Browser: open in native Chrome
+    if (isInAppBrowser() && isAndroid()) {
+      const host = typeof window !== 'undefined' ? window.location.host : 'cityhost.live';
+      const path = typeof window !== 'undefined' ? window.location.pathname + window.location.search : '/';
+      const intentUrl = `intent://${host}${path}#Intent;scheme=https;package=com.android.chrome;end`;
+      try {
+        window.location.href = intentUrl;
+        setHintMessage('Opening in Chrome to add shortcut...');
+        return;
+      } catch {}
+    }
+
+    // 4. Android Chrome: guide to menu shortcut
+    if (isAndroid()) {
+      setHintMessage('Tap ⋮ (top right menu) and tap "Add to Home screen"');
+      return;
+    }
+
+    // 5. Desktop Chrome / Edge
+    if (typeof window !== 'undefined' && !isIOS() && !isAndroid()) {
+      setHintMessage('Press Ctrl+D (Cmd+D on Mac) to bookmark, or click the install icon in the URL bar');
+      return;
+    }
+
+    // 6. Generic Fallback: Copy link
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+        await navigator.clipboard.writeText(window.location.href);
+        setHintMessage('Link copied! Open Chrome or Safari and tap "Add to Home screen"');
+      }
+    } catch {
+      setHintMessage('Open in Chrome or Safari and select "Add to Home Screen"');
+    }
+  }, [deferred]);
 
   if (!visible) return null;
 
-  const who = senderName?.trim() || 'She';
-  const ios = isIOS();
-  const android = isAndroid();
-
-  if (showIOSGuide) {
-    return (
-      <div className={compact || softTeaser ? '' : 'modal-overlay'} onClick={compact || softTeaser ? undefined : dismiss}>
-        <div
-          className={`${compact || softTeaser ? 'rounded-2xl border border-surface-700 bg-surface-900 p-4' : 'modal-content max-w-sm w-full p-5'}`}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="flex items-start justify-between gap-3 mb-4">
-            <div>
-              <h3 className="text-base font-bold text-white">
-                {android ? 'Install on Android' : ios ? 'Add to Home Screen' : 'Install City Host'}
-              </h3>
-              <p className="text-xs text-surface-400 mt-1">
-                {android
-                  ? 'Add City Host to your home screen for 1-click access and reply alerts.'
-                  : ios
-                  ? 'iPhone needs Share → Add to Home Screen in Safari.'
-                  : 'Install City Host app for instant chat and notifications.'}
-              </p>
+  // COMPACT INLINE CARD MODE (Profile Page - Single Clean Row)
+  if (compact) {
+    if (installed || isAlreadyInstalled) {
+      return (
+        <div className="w-full flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-surface-900 border border-surface-800">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-7 h-7 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0">
+              <Check className="w-4 h-4 text-emerald-400" />
             </div>
-            {!compact && !softTeaser && (
+            <span className="text-xs sm:text-sm font-semibold text-white truncate">
+              App installed on this device
+            </span>
+          </div>
+          <span className="shrink-0 text-[11px] font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/25">
+            Installed
+          </span>
+        </div>
+      );
+    }
+
+    return (
+      <div className="w-full space-y-1.5">
+        <div className="w-full flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-surface-900 border border-surface-700/80 hover:border-brand-500/50 transition shadow-sm">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-7 h-7 rounded-lg bg-brand-500/20 border border-brand-500/40 flex items-center justify-center shrink-0">
+              <HeartMark className="w-4 h-4 text-brand-400" />
+            </div>
+            <p className="text-xs sm:text-sm font-semibold text-white truncate">
+              {shortcutNeeded
+                ? "App didn't install? Click here to add shortcut"
+                : 'Install app in one click'}
+            </p>
+          </div>
+
+          {shortcutNeeded ? (
+            <button
+              type="button"
+              onClick={handleShortcutClick}
+              className="shrink-0 text-[11px] font-bold text-white bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400 active:scale-95 px-3 py-1.5 rounded-lg shadow-md shadow-brand-500/30 transition flex items-center gap-1.5 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add Shortcut</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleInstallClick}
+              disabled={installing}
+              className="shrink-0 text-[11px] font-bold text-brand-300 bg-brand-500/15 hover:bg-brand-500 hover:text-white active:scale-95 px-3 py-1.5 rounded-lg border border-brand-500/30 transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{installing ? 'Opening...' : 'Install'}</span>
+            </button>
+          )}
+        </div>
+
+        {hintMessage && (
+          <div className="px-3 py-1.5 rounded-lg bg-brand-500/10 border border-brand-500/20 text-brand-300 text-[11px] font-medium flex items-center justify-between gap-2 animate-fade-in">
+            <span className="truncate">{hintMessage}</span>
+            <button
+              type="button"
+              onClick={() => setHintMessage(null)}
+              className="text-surface-400 hover:text-white p-0.5"
+              aria-label="Close hint"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // TOP CHAT BANNER MODE (Chat Screen)
+  if (bannerMode) {
+    if (installed || isAlreadyInstalled) return null;
+
+    return (
+      <div className="w-full space-y-1 shrink-0 z-10 animate-fade-in">
+        <div className="px-3 py-2 bg-gradient-to-r from-surface-950 via-surface-900 to-surface-950 border-b border-brand-500/30 flex items-center justify-between gap-2 text-xs shadow-md">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-7 h-7 rounded-lg bg-brand-500/20 border border-brand-500/40 flex items-center justify-center shrink-0">
+              <HeartMark className="w-4 h-4 text-brand-400" />
+            </div>
+            <p className="text-white font-medium truncate text-[11px] sm:text-xs">
+              {shortcutNeeded
+                ? "App didn't install? Click here to add shortcut"
+                : 'Install app for instant reply alerts & faster chat'}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            {shortcutNeeded ? (
               <button
+                type="button"
+                onClick={handleShortcutClick}
+                className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 active:scale-95 text-white font-bold text-[11px] transition cursor-pointer shadow-md shadow-brand-500/30 flex items-center gap-1 shrink-0"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add Shortcut</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleInstallClick}
+                disabled={installing}
+                className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-brand-500 hover:bg-brand-400 active:scale-95 text-white font-bold text-[11px] transition cursor-pointer shadow-md shadow-brand-500/30 flex items-center gap-1 shrink-0 disabled:opacity-50"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>{installing ? '...' : 'Install'}</span>
+              </button>
+            )}
+
+            {!permanent && (
+              <button
+                type="button"
                 onClick={dismiss}
-                aria-label="Close"
-                className="text-surface-400 hover:text-white cursor-pointer shrink-0"
+                className="p-1 text-surface-400 hover:text-white rounded-lg transition cursor-pointer shrink-0"
+                aria-label="Dismiss"
               >
                 <X className="w-4 h-4" />
               </button>
             )}
           </div>
-
-          <ol className="space-y-3">
-            <li className="flex items-center gap-3 p-3 rounded-xl bg-surface-800/70 border border-surface-700/60">
-              <span className="w-6 h-6 rounded-full bg-brand-500 text-white text-xs font-bold flex items-center justify-center shrink-0">
-                1
-              </span>
-              <span className="text-xs text-surface-200 flex items-center gap-1.5">
-                {android ? (
-                  <>
-                    Tap <span className="font-bold text-white text-sm">⋮</span> (Menu) in top-right of your browser
-                  </>
-                ) : ios ? (
-                  <>
-                    Tap <Share className="w-4 h-4 text-brand-400" /> <span className="font-semibold text-white">Share</span> in Safari
-                  </>
-                ) : (
-                  <>
-                    Click the <Download className="w-4 h-4 text-brand-400" /> <span className="font-semibold text-white">Install</span> icon in browser address bar
-                  </>
-                )}
-              </span>
-            </li>
-            <li className="flex items-center gap-3 p-3 rounded-xl bg-surface-800/70 border border-surface-700/60">
-              <span className="w-6 h-6 rounded-full bg-brand-500 text-white text-xs font-bold flex items-center justify-center shrink-0">
-                2
-              </span>
-              <span className="text-xs text-surface-200 flex items-center gap-1.5">
-                {android ? (
-                  <>
-                    Choose <Plus className="w-4 h-4 text-brand-400" /> <span className="font-semibold text-white">Install app</span> or <span className="font-semibold text-white">Add to Home screen</span>
-                  </>
-                ) : ios ? (
-                  <>
-                    Choose <Plus className="w-4 h-4 text-brand-400" /> <span className="font-semibold text-white">Add to Home Screen</span>
-                  </>
-                ) : (
-                  <>
-                    Click <span className="font-semibold text-white">Install</span>
-                  </>
-                )}
-              </span>
-            </li>
-          </ol>
-
-          <button
-            onClick={dismiss}
-            className="btn-secondary w-full py-2.5 text-xs font-semibold mt-4 cursor-pointer"
-          >
-            Got it
-          </button>
         </div>
+
+        {hintMessage && (
+          <div className="mx-3 px-3 py-1.5 rounded-lg bg-brand-500/10 border border-brand-500/20 text-brand-300 text-[11px] font-medium flex items-center justify-between gap-2 animate-fade-in">
+            <span className="truncate">{hintMessage}</span>
+            <button
+              type="button"
+              onClick={() => setHintMessage(null)}
+              className="text-surface-400 hover:text-white p-0.5"
+              aria-label="Close hint"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        )}
       </div>
     );
   }
 
-  if (softTeaser || compact) {
-    return (
-      <button
-        type="button"
-        onClick={install}
-        className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-surface-900 border border-surface-700 hover:border-brand-500/40 transition cursor-pointer text-left"
-      >
-        <span className="flex items-center gap-2 min-w-0">
-          <Download className="w-3.5 h-3.5 text-brand-400 shrink-0" />
-          <span className="text-xs font-semibold text-white truncate">
-            One click install this app
-          </span>
-        </span>
-        <span className="text-[10px] font-bold text-brand-300 shrink-0">Install</span>
-      </button>
-    );
-  }
-
-  return (
-    <div className="fixed bottom-20 md:bottom-6 left-3 right-3 md:left-auto md:right-6 md:max-w-xs z-50">
-      <div className="glass-card px-3 py-2 flex items-center gap-2 border-brand-500/40">
-        <Download className="w-4 h-4 text-brand-300 shrink-0" />
-        <p className="flex-1 min-w-0 text-xs font-semibold text-white truncate">
-          {senderName ? `${who} replied — ` : ''}One click install this app
-        </p>
-        <button
-          onClick={install}
-          className="shrink-0 text-[10px] font-bold text-brand-300 hover:text-brand-200 cursor-pointer"
-        >
-          Install
-        </button>
-        <button
-          onClick={dismiss}
-          aria-label="Dismiss"
-          className="text-surface-500 hover:text-white cursor-pointer shrink-0"
-        >
-          <X className="w-3.5 h-3.5" />
-        </button>
-      </div>
-    </div>
-  );
+  return null;
 }

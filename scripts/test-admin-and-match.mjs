@@ -6,8 +6,8 @@ const prisma = new PrismaClient();
 async function test() {
   console.log('🧪 Testing Admin Login & Auth...');
   
-  // Ensure seed admin hash is Dev007
-  const hash = await bcrypt.hash('Dev007', 10);
+  // Ensure seed admin hash is 123456
+  const hash = await bcrypt.hash('123456', 10);
   await prisma.staffAccount.upsert({
     where: { email: 'admin@heartlink.com' },
     update: { passwordHash: hash, role: 'admin', status: 'active' },

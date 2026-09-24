@@ -242,10 +242,18 @@ export async function POST(req: NextRequest) {
         });
     }
 
+    const effectiveToken =
+      guestToken ||
+      signToken(
+        { id: user.id, email: user.email || '', type: 'user' },
+        GUEST_SESSION_DAYS
+      );
+
     return attachUserCookie(
       NextResponse.json({
         success: true,
         data: {
+          token: effectiveToken,
           user: {
             id: user.id,
             displayName: user.profile?.displayName || name || 'Visitor',
@@ -270,11 +278,7 @@ export async function POST(req: NextRequest) {
             : null,
         },
       }),
-      guestToken ||
-        signToken(
-          { id: user.id, email: user.email || '', type: 'user' },
-          GUEST_SESSION_DAYS
-        ),
+      effectiveToken,
       GUEST_SESSION_DAYS
     );
   } catch (err) {

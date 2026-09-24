@@ -2,6 +2,31 @@
 
 import { Check, CheckCheck } from 'lucide-react';
 
+/** Check if a user was active in the last 5 minutes (Real-time Presence). */
+export function isUserOnline(iso?: string | null): boolean {
+  if (!iso) return false;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return false;
+  return Date.now() - t < 5 * 60 * 1000;
+}
+
+/** Human-readable last active status (e.g. "Just now", "15m ago", "2h ago"). */
+export function lastSeenTime(iso?: string | null): string {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '';
+  const diffSec = Math.floor((Date.now() - t) / 1000);
+  if (diffSec < 60) return 'Just now';
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHours = Math.floor(diffMin / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
 /** WhatsApp-style relative time for chat lists. */
 export function chatListTime(iso?: string | null): string {
   if (!iso) return '';

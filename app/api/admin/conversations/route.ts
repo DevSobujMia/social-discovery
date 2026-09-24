@@ -1,12 +1,59 @@
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { requireStaff } from '@/lib/auth';
-import { success, error, handleApiError } from '@/lib/api-helpers';
+import { success, handleApiError } from '@/lib/api-helpers';
+import { extractCityFromText } from '@/lib/market';
+
+const utmInclude = {
+  select: {
+    utmSource: true,
+    utmMedium: true,
+    utmCampaign: true,
+    utmContent: true,
+    utmTerm: true,
+    campaign: { select: { name: true, platform: true } },
+  },
+} as const;
+
+function leadAttribution(user: {
+  geoCity?: string | null;
+  geoCountry?: string | null;
+  utmAttribution?: {
+    utmSource?: string | null;
+    utmMedium?: string | null;
+    utmCampaign?: string | null;
+    utmContent?: string | null;
+    utmTerm?: string | null;
+    campaign?: { name: string; platform: string } | null;
+  } | null;
+} | null | undefined) {
+  const utm = user?.utmAttribution;
+  const city =
+    (user?.geoCity && String(user.geoCity).trim()) ||
+    extractCityFromText(utm?.utmContent) ||
+    extractCityFromText(utm?.utmCampaign) ||
+    extractCityFromText(utm?.utmTerm) ||
+    null;
+  const ad =
+    utm?.campaign?.name ||
+    utm?.utmCampaign ||
+    utm?.utmContent ||
+    null;
+  const platform = utm?.campaign?.platform || utm?.utmSource || null;
+  return {
+    city,
+    geoCountry: user?.geoCountry || null,
+    ad,
+    platform,
+    campaign: utm?.utmCampaign || null,
+    content: utm?.utmContent || null,
+  };
+}
 
 // GET /api/admin/conversations — master inbox
 export async function GET(req: NextRequest) {
   try {
-    const staff = await requireStaff();
+    const staff = await requireStaff(req);
     const { searchParams } = new URL(req.url);
     const page = parseInt(searchParams.get('page') || '1');
     const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 100);
@@ -47,15 +94,48 @@ export async function GET(req: NextRequest) {
           representedProfileUser: {
             include: {
               profile: {
-                select: { displayName: true, photos: { where: { isPrimary: true }, take: 1 } },
+                select: {
+                  displayName: true,
+                  bio: true,
+                  city: true,
+                  country: true,
+                  isVerified: true,
+                  photos: { orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }], take: 3 },
+                  travelPlans: {
+                    where: { isActive: true },
+                    orderBy: { fromDate: 'asc' },
+                    take: 5,
+                    select: {
+                      id: true,
+                      country: true,
+                      city: true,
+                      fromDate: true,
+                      toDate: true,
+                      note: true,
+                      photoUrl: true,
+                      timing: true,
+                    },
+                  },
+                },
               },
             },
           },
           customerUser: {
             include: {
               profile: {
-                select: { displayName: true, photos: { where: { isPrimary: true }, take: 1 } },
+                select: {
+                  displayName: true,
+                  bio: true,
+                  city: true,
+                  country: true,
+                  photos: { orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }], take: 3 },
+                },
               },
+              identities: {
+                select: { kind: true, value: true, label: true },
+                take: 10,
+              },
+              utmAttribution: utmInclude,
               assignments: {
                 where: { status: 'active' },
                 include: { agent: { select: { id: true, displayName: true } } },
@@ -68,8 +148,35 @@ export async function GET(req: NextRequest) {
               user: {
                 include: {
                   profile: {
-                    select: { displayName: true, photos: { where: { isPrimary: true }, take: 1 } },
+                    select: {
+                      displayName: true,
+                      bio: true,
+                      city: true,
+                      country: true,
+                      isVerified: true,
+                      photos: { orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }], take: 3 },
+                      travelPlans: {
+                        where: { isActive: true },
+                        orderBy: { fromDate: 'asc' },
+                        take: 5,
+                        select: {
+                          id: true,
+                          country: true,
+                          city: true,
+                          fromDate: true,
+                          toDate: true,
+                          note: true,
+                          photoUrl: true,
+                          timing: true,
+                        },
+                      },
+                    },
                   },
+                  identities: {
+                    select: { kind: true, value: true, label: true },
+                    take: 10,
+                  },
+                  utmAttribution: utmInclude,
                   assignments: {
                     where: { status: 'active' },
                     include: { agent: { select: { id: true, displayName: true } } },
@@ -123,6 +230,7 @@ export async function GET(req: NextRequest) {
       const customerDisplayName = customerUser?.profile?.displayName || 'Customer';
       const representedDisplayName = representedUser?.profile?.displayName || 'Profile';
       const assignedAgent = customerUser?.assignments?.[0]?.agent || null;
+      const attribution = leadAttribution(customerUser);
 
       return {
         id: conv.id,
@@ -136,14 +244,39 @@ export async function GET(req: NextRequest) {
           userId: customerPart.userId,
           displayName: customerDisplayName,
           email: customerUser?.email || null,
-          photo: customerUser?.profile?.photos?.[0]?.filePath || null,
+          phone: customerUser?.identities?.find((i: any) => i.kind === 'phone')?.value || null,
+          whatsapp: customerUser?.identities?.find((i: any) => i.kind === 'whatsapp')?.value || null,
+          telegram: customerUser?.identities?.find((i: any) => i.kind === 'telegram')?.value || null,
+          leadIdentities: customerUser?.identities || [],
+          photo: customerUser?.profile?.photos?.[0]?.filePath || (customerUser as any)?.avatarUrl || null,
+          photos: customerUser?.profile?.photos?.map(p => p.filePath) || [],
           assignedAgent: assignedAgent?.displayName || null,
           assignedAgentId: assignedAgent?.id || null,
+          geoCity: attribution.city || customerUser?.profile?.city || null,
+          geoCountry: attribution.geoCountry || customerUser?.profile?.country || null,
+          leadStage: (customerUser as any)?.leadStage || 'new',
+          bio: customerUser?.profile?.bio || null,
+          lastActiveAt: customerUser?.lastActiveAt?.toISOString?.() || customerUser?.lastActiveAt || null,
+          attribution,
+          source: (attribution.campaign || attribution.content)
+            ? {
+                utm_source: attribution.platform,
+                utm_campaign: attribution.campaign,
+                utm_content: attribution.content,
+              }
+            : null,
         } : null,
         representedProfile: representedPart ? {
           userId: representedPart.userId,
           displayName: representedDisplayName,
           photo: representedUser?.profile?.photos?.[0]?.filePath || null,
+          photos: representedUser?.profile?.photos?.map(p => p.filePath) || [],
+          bio: representedUser?.profile?.bio || null,
+          city: representedUser?.profile?.city || null,
+          country: representedUser?.profile?.country || null,
+          isVerified: Boolean(representedUser?.profile?.isVerified),
+          travelPlans: representedUser?.profile?.travelPlans || [],
+          lastActiveAt: representedUser?.lastActiveAt?.toISOString?.() || representedUser?.lastActiveAt || null,
           isStaffAssisted: representedUser?.profileOwnerType === 'staff_assisted',
         } : null,
         handledBy: assignedAgent?.displayName || null,

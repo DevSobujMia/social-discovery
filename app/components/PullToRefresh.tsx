@@ -16,32 +16,47 @@ export default function PullToRefresh({ onRefresh, className, children }: Props)
   const [pullDistance, setPullDistance] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const startYRef = useRef(0);
+  const startXRef = useRef(0);
+  const isHorizontalSwipe = useRef(false);
   const pullingRef = useRef(false);
 
   const handleTouchStart = useCallback((e: TouchEvent) => {
     // Only trigger if at top of page/viewport
     if (window.scrollY <= 0 && !isRefreshing) {
       startYRef.current = e.touches[0].clientY;
+      startXRef.current = e.touches[0].clientX;
+      isHorizontalSwipe.current = false;
       pullingRef.current = true;
     }
   }, [isRefreshing]);
 
   const handleTouchMove = useCallback((e: TouchEvent) => {
-    if (!pullingRef.current || isRefreshing) return;
+    if (!pullingRef.current || isRefreshing || isHorizontalSwipe.current) return;
     if (window.scrollY > 0) {
       pullingRef.current = false;
       setPullDistance(0);
       return;
     }
 
+    const currentX = e.touches[0].clientX;
     const currentY = e.touches[0].clientY;
-    const diff = currentY - startYRef.current;
+    const diffX = currentX - startXRef.current;
+    const diffY = currentY - startYRef.current;
 
-    if (diff > 0) {
+    // Detect horizontal swipe gesture (e.g. swiping between screens/tabs)
+    if (!isHorizontalSwipe.current && Math.abs(diffX) > Math.abs(diffY) && Math.abs(diffX) > 10) {
+      isHorizontalSwipe.current = true;
+      pullingRef.current = false;
+      setPullDistance(0);
+      return;
+    }
+
+    // Only engage pull when moving vertically downwards past deadband
+    if (diffY > 8) {
       // Elastic damping physics
-      const distance = Math.min(MAX_PULL, diff * 0.45);
+      const distance = Math.min(MAX_PULL, (diffY - 8) * 0.45);
       setPullDistance(distance);
-      if (distance > 10 && e.cancelable) {
+      if (distance > 15 && e.cancelable) {
         // Prevent default overscroll bounce
         e.preventDefault();
       }
@@ -112,13 +127,13 @@ export default function PullToRefresh({ onRefresh, className, children }: Props)
                 transform: isRefreshing ? undefined : `rotate(${progress * 270}deg)`,
               }}
             />
-            <span className="text-[11px] font-bold text-surface-200">
-              {isRefreshing
-                ? 'Refreshing…'
-                : pullDistance >= THRESHOLD
-                ? 'Release to refresh'
-                : 'Pull down to refresh'}
-            </span>
+            {(isRefreshing || pullDistance >= THRESHOLD) && (
+              <span className="text-[11px] font-bold text-surface-200">
+                {isRefreshing
+                  ? 'Refreshing…'
+                  : 'Release to refresh'}
+              </span>
+            )}
           </div>
         </div>
       )}

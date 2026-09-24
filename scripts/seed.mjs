@@ -30,7 +30,7 @@ async function main() {
     create: {
       email: 'sarah@heartlink.com',
       passwordHash: agentPasswordHash,
-      displayName: 'Sarah Jenkins (Matchmaker)',
+      displayName: 'Sarah Jenkins',
       role: 'agent',
       status: 'active',
       createdById: admin.id,
@@ -44,7 +44,7 @@ async function main() {
     create: {
       email: 'alex@heartlink.com',
       passwordHash: agentPasswordHash,
-      displayName: 'Alex Carter (Relationship Coach)',
+      displayName: 'Alex Carter',
       role: 'agent',
       status: 'active',
       createdById: admin.id,
@@ -655,14 +655,14 @@ async function main() {
       bio: 'Seattle local planning Dubai days off after meetings. Friendly, low-drama, and happiest exploring with good company.',
       interests: ['Hiking', 'Coffee', 'Music', 'Food', 'Travel'],
       birthDate: new Date('1995-11-29'),
-      lookingFor: 'friendship',
+      lookingFor: 'travel_partner',
       photo: '/api/uploads/profiles/ava-bennett.png',
       trip: {
         country: 'United Arab Emirates',
         city: 'Dubai',
         fromDate: day(10),
         toDate: day(20),
-        note: 'Dubai for meetings plus free days — open to friendship and easy city exploring.',
+        note: 'Dubai for meetings plus free days — happy to explore the city with a local.',
       },
     },
     {
@@ -793,21 +793,6 @@ async function main() {
         profileOwnerType: 'staff_assisted',
         createdByStaffId: admin.id,
         lastActiveAt: new Date(),
-        profile: {
-          update: {
-            displayName: u.displayName,
-            gender: u.gender,
-            country: u.country,
-            city: u.city,
-            bio: u.bio,
-            interests: u.interests,
-            lookingFor: 'travel_partner',
-            dateOfBirth: u.birthDate,
-            isVerified: true,
-            isVisible: true,
-            profileCompleteness: 90,
-          },
-        },
       },
       create: {
         email: u.email,
@@ -846,19 +831,14 @@ async function main() {
       },
     });
 
-    const profile = await prisma.profile.findUnique({ where: { userId: user.id } });
+    const profile = await prisma.profile.findUnique({
+      where: { userId: user.id },
+      include: { photos: true, travelPlans: true },
+    });
     if (!profile) continue;
 
-    // Keep curated local photos attached even when seed re-runs after a wipe.
-    const primary = await prisma.profilePhoto.findFirst({
-      where: { profileId: profile.id, isPrimary: true },
-    });
-    if (primary) {
-      await prisma.profilePhoto.update({
-        where: { id: primary.id },
-        data: { filePath: u.photo },
-      });
-    } else {
+    // Never overwrite curated real photos or live trip plans on re-seed.
+    if (profile.photos.length === 0) {
       await prisma.profilePhoto.create({
         data: {
           profileId: profile.id,
@@ -871,19 +851,20 @@ async function main() {
       });
     }
 
-    await prisma.travelPlan.deleteMany({ where: { profileId: profile.id } });
-    await prisma.travelPlan.create({
-      data: {
-        profileId: profile.id,
-        country: u.trip.country,
-        city: u.trip.city,
-        fromDate: u.trip.fromDate,
-        toDate: u.trip.toDate,
-        note: u.trip.note,
-        photoUrl: u.photo,
-        isActive: true,
-      },
-    });
+    if (profile.travelPlans.length === 0) {
+      await prisma.travelPlan.create({
+        data: {
+          profileId: profile.id,
+          country: u.trip.country,
+          city: u.trip.city,
+          fromDate: u.trip.fromDate,
+          toDate: u.trip.toDate,
+          note: u.trip.note,
+          photoUrl: u.photo,
+          isActive: true,
+        },
+      });
+    }
   }
 
   console.log(`✅ Seeded ${gulfProfiles.length} Gulf travel profiles with active trips`);

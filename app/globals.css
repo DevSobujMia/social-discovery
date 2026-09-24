@@ -29,6 +29,7 @@
   --color-accent-violet: #8b5cf6;
 
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-display: 'Fraunces', 'Iowan Old Style', Georgia, serif;
 }
 
 * {
@@ -112,6 +113,70 @@ body.simulator-page {
   background: linear-gradient(to right, var(--color-brand-400), var(--color-brand-500), var(--color-accent-violet));
   -webkit-background-clip: text;
   color: transparent;
+}
+
+.brand-wordmark {
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  color: #fff;
+  white-space: nowrap;
+}
+
+.brand-wordmark em {
+  font-style: italic;
+  font-weight: 500;
+  color: var(--color-brand-300);
+  letter-spacing: -0.02em;
+}
+
+.brand-mark {
+  width: 2.15rem;
+  height: 2.15rem;
+  border-radius: 0.7rem;
+  object-fit: cover;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 8px 22px rgba(236, 72, 153, 0.22);
+}
+
+.heart-neon {
+  width: 1.7rem;
+  height: 1.62rem;
+  display: block;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.hero-headline {
+  font-family: var(--font-display);
+  font-size: 1.45rem;
+  font-weight: 560;
+  letter-spacing: -0.035em;
+  line-height: 1.28;
+  color: rgba(255, 255, 255, 0.94);
+  text-wrap: balance;
+}
+
+.hero-headline .accent {
+  font-style: italic;
+  font-weight: 580;
+  background: linear-gradient(120deg, #f9a8d4 0%, #ec4899 55%, #14b8a6 130%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.hero-headline .place {
+  font-style: italic;
+  font-weight: 500;
+  color: #5eead4;
+}
+
+@media (min-width: 640px) {
+  .hero-headline {
+    font-size: 1.7rem;
+  }
 }
 
 /* Primary button */
@@ -275,6 +340,10 @@ body.simulator-page {
   padding: 0.25rem 0.5rem max(0.35rem, env(safe-area-inset-bottom));
 }
 
+.bottom-nav.hidden {
+  display: none !important;
+}
+
 @media (min-width: 768px) {
   .bottom-nav {
     display: none !important;
@@ -372,6 +441,23 @@ body.simulator-page {
   to { opacity: 1; transform: scale(1); }
 }
 
+.animate-fade-in {
+  animation: fadeIn 0.35s ease-out;
+}
+
+.animate-slide-up {
+  animation: slideUp 0.28s ease-out;
+}
+
+@keyframes slideRight {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+.animate-slide-right {
+  animation: slideRight 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
@@ -416,10 +502,10 @@ body.simulator-page {
 
 @keyframes marqueeScroll {
   0% {
-    transform: translateX(0%);
+    transform: translate(0%);
   }
   100% {
-    transform: translateX(-50%);
+    transform: translate(-50%);
   }
 }
 
@@ -433,5 +519,35 @@ body.simulator-page {
 .animate-marquee-smooth:hover,
 .animate-marquee-smooth:active {
   animation-play-state: paused;
+}
+
+@keyframes pageSlideInRight {
+  from {
+    opacity: 0.88;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes pageSlideInLeft {
+  from {
+    opacity: 0.88;
+    transform: translateX(-18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.animate-slide-in-right {
+  animation: pageSlideInRight 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-slide-in-left {
+  animation: pageSlideInLeft 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 

@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
+import type { NextRequest } from 'next/server';
 import { prisma } from './db';
 
 const AUTH_SECRET = process.env.AUTH_SECRET || 'fallback-dev-secret';
@@ -31,9 +32,11 @@ export async function hashPassword(password: string): Promise<string> {
   return bcrypt.hash(password, 12);
 }
 
-export async function verifyPassword(password: string, hash: string): Promise<boolean> {
+export async function comparePassword(password: string, hash: string): Promise<boolean> {
   return bcrypt.compare(password, hash);
 }
+
+export const verifyPassword = comparePassword;
 
 export interface TokenPayload {
   id: string;
@@ -42,8 +45,13 @@ export interface TokenPayload {
   role?: string;
 }
 
-export function signToken(payload: TokenPayload, expiresInDays?: number): string {
-  const expiresIn = expiresInDays ? `${expiresInDays}d` : JWT_EXPIRES_IN || '7d';
+export function signToken(payload: TokenPayload, expiresInDays?: string | number): string {
+  let expiresIn: string | number = JWT_EXPIRES_IN;
+  if (typeof expiresInDays === 'number') {
+    expiresIn = `${expiresInDays}d`;
+  } else if (typeof expiresInDays === 'string') {
+    expiresIn = expiresInDays;
+  }
   return jwt.sign(payload, AUTH_SECRET, {
     expiresIn: expiresIn as jwt.SignOptions['expiresIn'],
   });
@@ -61,14 +69,19 @@ function cookieOptions(maxAgeDays: number) {
   const isSecure =
     process.env.COOKIE_SECURE === 'true' ||
     (process.env.NODE_ENV === 'production' &&
-      Boolean(process.env.NEXT_PUBLIC_SITE_URL?.startsWith('https')));
+      (Boolean(process.env.NEXT_PUBLIC_SITE_URL?.startsWith('https')) ||
+        Boolean(process.env.NEXT_PUBLIC_APP_URL?.startsWith('https')) ||
+        Boolean(process.env.APP_URL?.startsWith('https')) ||
+        process.env.NODE_ENV === 'production'));
 
+  const maxAgeSeconds = 60 * 60 * 24 * maxAgeDays;
   return {
     httpOnly: true,
     secure: isSecure,
     sameSite: 'lax' as const,
     path: '/',
-    maxAge: 60 * 60 * 24 * maxAgeDays,
+    maxAge: maxAgeSeconds,
+    expires: new Date(Date.now() + maxAgeSeconds * 1000),
   };
 }
 
@@ -117,18 +130,68 @@ export async function removeAllAuthCookies() {
   cookieStore.delete(STAFF_COOKIE);
 }
 
-export async function getAuthToken(): Promise<string | null> {
-  const cookieStore = await cookies();
-  return cookieStore.get(USER_COOKIE)?.value || null;
+export async function getAuthToken(req?: NextRequest | Request): Promise<string | null> {
+  let token: string | null = null;
+  if (req && 'cookies' in req && typeof (req.cookies as any)?.get === 'function') {
+    token = (req.cookies as any).get(USER_COOKIE)?.value || null;
+  }
+  if (!token) {
+    try {
+      const cookieStore = await cookies();
+      token = cookieStore.get(USER_COOKIE)?.value || null;
+    } catch {}
+  }
+  if (token) return token;
+
+  if (req && typeof req.headers?.get === 'function') {
+    const auth = req.headers.get('authorization') || req.headers.get('Authorization');
+    if (auth && auth.toLowerCase().startsWith('bearer ')) {
+      return auth.slice(7).trim();
+    }
+  }
+  try {
+    const headerStore = await headers();
+    const auth = headerStore.get('authorization') || headerStore.get('Authorization');
+    if (auth && auth.toLowerCase().startsWith('bearer ')) {
+      return auth.slice(7).trim();
+    }
+  } catch {}
+
+  return null;
 }
 
-export async function getStaffAuthToken(): Promise<string | null> {
-  const cookieStore = await cookies();
-  return cookieStore.get(STAFF_COOKIE)?.value || null;
+export async function getStaffAuthToken(req?: NextRequest | Request): Promise<string | null> {
+  let token: string | null = null;
+  if (req && 'cookies' in req && typeof (req.cookies as any)?.get === 'function') {
+    token = (req.cookies as any).get(STAFF_COOKIE)?.value || null;
+  }
+  if (!token) {
+    try {
+      const cookieStore = await cookies();
+      token = cookieStore.get(STAFF_COOKIE)?.value || null;
+    } catch {}
+  }
+  if (token) return token;
+
+  if (req && typeof req.headers?.get === 'function') {
+    const auth = req.headers.get('authorization') || req.headers.get('Authorization');
+    if (auth && auth.toLowerCase().startsWith('bearer ')) {
+      return auth.slice(7).trim();
+    }
+  }
+  try {
+    const headerStore = await headers();
+    const auth = headerStore.get('authorization') || headerStore.get('Authorization');
+    if (auth && auth.toLowerCase().startsWith('bearer ')) {
+      return auth.slice(7).trim();
+    }
+  } catch {}
+
+  return null;
 }
 
-export async function getCurrentUser() {
-  const token = await getAuthToken();
+export async function getCurrentUser(req?: NextRequest | Request) {
+  const token = await getAuthToken(req);
   if (!token) return null;
 
   const payload = verifyToken(token);
@@ -156,8 +219,8 @@ export async function getCurrentUser() {
   }
 }
 
-export async function getCurrentStaff() {
-  const token = await getStaffAuthToken();
+export async function getCurrentStaff(req?: NextRequest | Request) {
+  const token = await getStaffAuthToken(req);
   if (!token) return null;
 
   const payload = verifyToken(token);
@@ -174,16 +237,34 @@ export async function getCurrentStaff() {
   }
 }
 
-export async function requireUser() {
-  const user = await getCurrentUser();
+export async function requireUser(req?: NextRequest | Request) {
+  const user = await getCurrentUser(req);
   if (!user) {
     throw new Error('UNAUTHORIZED');
   }
   return user;
 }
 
-export async function requireStaff(requiredRole?: 'admin' | 'agent') {
-  const staff = await getCurrentStaff();
+export async function requireStaff(
+  arg1?: 'admin' | 'agent' | NextRequest | Request,
+  arg2?: 'admin' | 'agent' | NextRequest | Request
+) {
+  let requiredRole: 'admin' | 'agent' | undefined;
+  let req: NextRequest | Request | undefined;
+
+  if (typeof arg1 === 'string') {
+    requiredRole = arg1;
+  } else if (arg1 && typeof arg1 === 'object') {
+    req = arg1;
+  }
+
+  if (typeof arg2 === 'string') {
+    requiredRole = arg2;
+  } else if (arg2 && typeof arg2 === 'object') {
+    req = arg2;
+  }
+
+  const staff = await getCurrentStaff(req);
   if (!staff) {
     throw new Error('UNAUTHORIZED');
   }
@@ -193,6 +274,6 @@ export async function requireStaff(requiredRole?: 'admin' | 'agent') {
   return staff;
 }
 
-export async function requireAdmin() {
-  return requireStaff('admin');
+export async function requireAdmin(req?: NextRequest | Request) {
+  return requireStaff('admin', req);
 }

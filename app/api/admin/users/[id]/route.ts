@@ -9,7 +9,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const staff = await requireStaff();
+    const staff = await requireStaff(req);
     const { id } = await params;
 
     // Agent access check
@@ -49,11 +49,11 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const staff = await requireStaff();
+    const staff = await requireStaff(req);
     const { id } = await params;
     const body = await req.json();
     const { status, displayName, gender, country, city, bio, interests,
-            lookingFor, relationshipIntention, dateOfBirth, isVisible } = body;
+            lookingFor, relationshipIntention, dateOfBirth, isVisible, photoUrl } = body;
 
     // Agent access check
     if (staff.role === 'agent') {
@@ -101,6 +101,34 @@ export async function PATCH(
       });
     }
 
+    const nextPhoto = typeof photoUrl === 'string' ? photoUrl.trim() : '';
+    if (nextPhoto) {
+      const profile = await prisma.profile.findUnique({
+        where: { userId: id },
+        include: { photos: { orderBy: { sortOrder: 'asc' } } },
+      });
+      if (profile) {
+        const primary = profile.photos.find((p) => p.isPrimary) || profile.photos[0];
+        if (primary) {
+          await prisma.profilePhoto.update({
+            where: { id: primary.id },
+            data: { filePath: nextPhoto },
+          });
+        } else {
+          await prisma.profilePhoto.create({
+            data: {
+              profileId: profile.id,
+              filePath: nextPhoto,
+              isPrimary: true,
+              sortOrder: 0,
+              uploadedBy: 'staff',
+              uploadedByStaffId: staff.id,
+            },
+          });
+        }
+      }
+    }
+
     const updated = await prisma.user.findUnique({
       where: { id },
       include: { profile: { include: { photos: true } } },
@@ -118,7 +146,7 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    await requireStaff('admin');
+    await requireStaff(req, 'admin');
     const { id } = await params;
 
     await prisma.user.update({

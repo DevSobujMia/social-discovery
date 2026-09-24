@@ -45,6 +45,12 @@ cloudflared.exe
 .pgdata/
 uploads/
 scratch/
+
+# Ad research only — not part of the City Host product
+/ads_campaign_kit/
 qa_screenshots_*/
 test-results/
 *.log
+public/test_*.png
+public/new_message_buttons_screen.png
+

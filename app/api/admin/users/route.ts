@@ -9,7 +9,7 @@ import { summarizeDeviceMeta } from '@/lib/device-meta';
 // GET /api/admin/users — list all users
 export async function GET(req: NextRequest) {
   try {
-    const staff = await requireStaff();
+    const staff = await requireStaff(req);
     const { searchParams } = new URL(req.url);
     const page = parseInt(searchParams.get('page') || '1');
     const limit = Math.min(parseInt(searchParams.get('limit') || '25'), 100);
@@ -149,7 +149,7 @@ export async function GET(req: NextRequest) {
 // POST /api/admin/users — create curated travel profile (staff-assisted)
 export async function POST(req: NextRequest) {
   try {
-    const staff = await requireStaff();
+    const staff = await requireStaff(req);
     const body = await req.json();
     const {
       email, password, displayName, age, gender, country, city, bio,
@@ -185,7 +185,7 @@ export async function POST(req: NextRequest) {
         .replace(/[^a-z0-9]+/g, '.')
         .replace(/^\.+|\.+$/g, '')
         .slice(0, 24);
-      userData.email = `${slug || 'profile'}.${Date.now()}@staff.heartlink.local`;
+      userData.email = `${slug || 'profile'}.${Date.now()}@staff.cityhost.local`;
     }
     if (password) {
       userData.passwordHash = await hashPassword(password);

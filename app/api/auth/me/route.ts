@@ -1,3 +1,4 @@
+import { NextRequest } from 'next/server';
 import {
   getCurrentUser,
   getCurrentStaff,
@@ -5,6 +6,8 @@ import {
   getStaffAuthToken,
   removeAuthCookie,
   removeStaffAuthCookie,
+  attachStaffCookie,
+  attachUserCookie,
 } from '@/lib/auth';
 import { success, handleApiError } from '@/lib/api-helpers';
 
@@ -12,14 +15,13 @@ import { success, handleApiError } from '@/lib/api-helpers';
  * Returns BOTH sessions when present.
  *
  * Admin and visitor cookies are separate on purpose so the same browser can
- * hold a guest lead and a staff login. Older code returned the first match
- * only (user before staff), which made /admin look "logged out" on every
- * refresh whenever the public site had created a guest cookie.
+ * hold a guest lead and a staff login. Supports both cookies and Bearer tokens,
+ * automatically refreshing the persistent 365-day cookie if session resumed.
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const token = await getAuthToken();
-    const user = await getCurrentUser();
+    const token = await getAuthToken(req);
+    const user = await getCurrentUser(req);
 
     // After a DB wipe/reseed the JWT can still be in the browser while the
     // user/staff row is gone. Drop orphan cookies so clients stop 401-polling.
@@ -27,8 +29,8 @@ export async function GET() {
       await removeAuthCookie();
     }
 
-    const staffToken = await getStaffAuthToken();
-    const staff = await getCurrentStaff();
+    const staffToken = await getStaffAuthToken(req);
+    const staff = await getCurrentStaff(req);
     if (staffToken && !staff) {
       await removeStaffAuthCookie();
     }
@@ -58,7 +60,7 @@ export async function GET() {
         }
       : null;
 
-    return success({
+    const res = success({
       user: userPayload,
       staff: staffPayload,
       // Convenience fields kept for older callers
@@ -69,6 +71,16 @@ export async function GET() {
       role: staffPayload?.role || null,
       displayName: staffPayload?.displayName || null,
     });
+
+    // Re-attach cookies if bearer token was used to restore session
+    if (staff && staffToken) {
+      attachStaffCookie(res, staffToken);
+    }
+    if (user && token) {
+      attachUserCookie(res, token);
+    }
+
+    return res;
   } catch (err) {
     return handleApiError(err);
   }

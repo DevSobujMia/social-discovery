@@ -146,21 +146,6 @@ async function main() {
         createdByStaffId: admin.id,
         lastActiveAt: new Date(),
         status: 'active',
-        profile: {
-          update: {
-            displayName: u.displayName,
-            gender: u.gender,
-            country: u.country,
-            city: u.city,
-            bio: u.bio,
-            interests: u.interests,
-            lookingFor: u.lookingFor,
-            dateOfBirth: u.birthDate,
-            isVerified: true,
-            isVisible: true,
-            profileCompleteness: 95,
-          },
-        },
       },
       create: {
         email: u.email,
@@ -199,19 +184,14 @@ async function main() {
       },
     });
 
-    const profile = await prisma.profile.findUnique({ where: { userId: user.id } });
+    const profile = await prisma.profile.findUnique({
+      where: { userId: user.id },
+      include: { photos: true, travelPlans: true },
+    });
     if (!profile) continue;
 
-    // Keep primary photo path in sync on re-seed.
-    const primary = await prisma.profilePhoto.findFirst({
-      where: { profileId: profile.id, isPrimary: true },
-    });
-    if (primary) {
-      await prisma.profilePhoto.update({
-        where: { id: primary.id },
-        data: { filePath: u.photo },
-      });
-    } else {
+    // Never overwrite curated real photos or live trip plans on re-seed.
+    if (profile.photos.length === 0) {
       await prisma.profilePhoto.create({
         data: {
           profileId: profile.id,
@@ -224,19 +204,20 @@ async function main() {
       });
     }
 
-    await prisma.travelPlan.deleteMany({ where: { profileId: profile.id } });
-    await prisma.travelPlan.create({
-      data: {
-        profileId: profile.id,
-        country: u.trip.country,
-        city: u.trip.city,
-        fromDate: u.trip.fromDate,
-        toDate: u.trip.toDate,
-        note: u.trip.note,
-        photoUrl: u.trip.photoUrl,
-        isActive: true,
-      },
-    });
+    if (profile.travelPlans.length === 0) {
+      await prisma.travelPlan.create({
+        data: {
+          profileId: profile.id,
+          country: u.trip.country,
+          city: u.trip.city,
+          fromDate: u.trip.fromDate,
+          toDate: u.trip.toDate,
+          note: u.trip.note,
+          photoUrl: u.trip.photoUrl,
+          isActive: true,
+        },
+      });
+    }
 
     console.log(`✅ ${u.displayName} · ${u.city}, ${u.country} · age ~${2026 - u.birthDate.getFullYear()}`);
   }

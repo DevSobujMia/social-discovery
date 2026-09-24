@@ -5,10 +5,67 @@ export async function ensureAssistedConversation(
   customerId: string,
   targetUserId: string
 ): Promise<string> {
+  let resolvedTargetUserId = targetUserId;
+
+  // Verify targetUserId exists and is active in the database
+  const targetExists = await prisma.user.findUnique({
+    where: { id: targetUserId },
+    select: { id: true, status: true },
+  });
+
+  if (!targetExists || targetExists.status !== 'active') {
+    // If targetUserId is a preview ID (e.g. 'preview-elena') or non-existent in DB,
+    // gracefully resolve to a real active profile
+    let fallbackUserId: string | null = null;
+
+    if (typeof targetUserId === 'string' && targetUserId.startsWith('preview-')) {
+      const previewName = targetUserId.replace(/^preview-/, '').toLowerCase();
+      const matchedProfile = await prisma.profile.findFirst({
+        where: {
+          displayName: { startsWith: previewName, mode: 'insensitive' },
+          isVisible: true,
+          user: { status: 'active' },
+        },
+        select: { userId: true },
+      });
+      if (matchedProfile?.userId) {
+        fallbackUserId = matchedProfile.userId;
+      }
+    }
+
+    if (!fallbackUserId) {
+      const anyActiveProfile = await prisma.profile.findFirst({
+        where: {
+          isVisible: true,
+          user: { status: 'active' },
+        },
+        select: { userId: true },
+      });
+      if (anyActiveProfile?.userId) {
+        fallbackUserId = anyActiveProfile.userId;
+      } else {
+        const anyUser = await prisma.user.findFirst({
+          where: {
+            id: { not: customerId },
+            status: 'active',
+          },
+          select: { id: true },
+        });
+        if (anyUser?.id) {
+          fallbackUserId = anyUser.id;
+        }
+      }
+    }
+
+    if (fallbackUserId) {
+      resolvedTargetUserId = fallbackUserId;
+    }
+  }
+
   let conv = await prisma.conversation.findFirst({
     where: {
       customerUserId: customerId,
-      representedProfileUserId: targetUserId,
+      representedProfileUserId: resolvedTargetUserId,
     },
   });
 
@@ -17,7 +74,7 @@ export async function ensureAssistedConversation(
       where: {
         AND: [
           { participants: { some: { userId: customerId } } },
-          { participants: { some: { userId: targetUserId } } },
+          { participants: { some: { userId: resolvedTargetUserId } } },
         ],
       },
     });
@@ -27,8 +84,8 @@ export async function ensureAssistedConversation(
     const existingMatch = await prisma.match.findFirst({
       where: {
         OR: [
-          { userAId: customerId, userBId: targetUserId },
-          { userAId: targetUserId, userBId: customerId },
+          { userAId: customerId, userBId: resolvedTargetUserId },
+          { userAId: resolvedTargetUserId, userBId: customerId },
         ],
       },
     });
@@ -36,7 +93,7 @@ export async function ensureAssistedConversation(
     const match =
       existingMatch ||
       (await prisma.match.create({
-        data: { userAId: customerId, userBId: targetUserId },
+        data: { userAId: customerId, userBId: resolvedTargetUserId },
       }));
 
     conv = await prisma.conversation.create({
@@ -45,9 +102,9 @@ export async function ensureAssistedConversation(
         type: 'assisted',
         status: 'active',
         customerUserId: customerId,
-        representedProfileUserId: targetUserId,
+        representedProfileUserId: resolvedTargetUserId,
         participants: {
-          create: [{ userId: customerId }, { userId: targetUserId }],
+          create: [{ userId: customerId }, { userId: resolvedTargetUserId }],
         },
       },
     });

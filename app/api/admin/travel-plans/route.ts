@@ -179,7 +179,13 @@ export async function PATCH(req: NextRequest) {
       data.timing = timing;
     }
     if (photoUrl !== undefined) {
-      data.photoUrl = photoUrl && String(photoUrl).trim() ? String(photoUrl).trim() : null;
+      const trimmed = photoUrl && String(photoUrl).trim();
+      if (trimmed) {
+        data.photoUrl = trimmed;
+      } else if (body.clearPhoto === true) {
+        data.photoUrl = null;
+      }
+      // Empty photoUrl without clearPhoto keeps the existing uploaded file.
     }
     if (fromDate !== undefined) {
       const from = parseDate(fromDate);

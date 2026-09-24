@@ -32,6 +32,10 @@ async function setPrimaryPhoto(profileId, filePath, staffId) {
     where: { profileId, isPrimary: true },
   });
   if (primary) {
+    // Keep real local uploads as-is; only repair Unsplash/empty placeholders.
+    if (primary.filePath?.startsWith('/api/uploads/')) {
+      return;
+    }
     await prisma.profilePhoto.update({
       where: { id: primary.id },
       data: { filePath },

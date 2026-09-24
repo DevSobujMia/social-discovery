@@ -4,18 +4,15 @@ import React, { useState, useRef } from 'react';
 import {
   X,
   Plane,
-  Calendar,
   MapPin,
   Sparkles,
-  Compass,
   AlertCircle,
   RefreshCw,
-  Camera,
   Image as ImageIcon,
-  Check,
   Clock,
   Upload
 } from 'lucide-react';
+import { ImageCropperModal } from './ImageCropperModal';
 
 interface PostTravelPlanModalProps {
   isOpen: boolean;
@@ -83,6 +80,8 @@ export function PostTravelPlanModal({
   const [note, setNote] = useState('');
   const [photoUrl, setPhotoUrl] = useState<string>(DESTINATION_PHOTOS['Dubai']);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [tripCropFile, setTripCropFile] = useState<File | null>(null);
+  const [showTripCropper, setShowTripCropper] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
@@ -112,9 +111,21 @@ export function PostTravelPlanModal({
     }
   };
 
-  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setTripCropFile(file);
+    setShowTripCropper(true);
+    e.target.value = '';
+  };
+
+  const handleTripPhotoCropped = async (croppedFile: File) => {
+    setShowTripCropper(false);
+    setTripCropFile(null);
+    await uploadTripPhotoFile(croppedFile);
+  };
+
+  const uploadTripPhotoFile = async (file: File) => {
     setUploadingPhoto(true);
     setErrorMsg(null);
     try {
@@ -420,7 +431,7 @@ export function PostTravelPlanModal({
                   type="file"
                   ref={photoInputRef}
                   accept="image/*"
-                  onChange={handlePhotoUpload}
+                  onChange={handlePhotoFileSelected}
                   className="hidden"
                 />
               </div>
@@ -436,7 +447,7 @@ export function PostTravelPlanModal({
               rows={3}
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              placeholder="e.g. Planning a Dubai trip soon. Want someone who actually lives there — not another tourist — for dinner and a walk."
+              placeholder="Describe your trip plans and what kind of local companion or guide you are looking for..."
               className="w-full bg-surface-950 border border-surface-700/80 rounded-xl px-3 py-2 text-white placeholder-surface-500 focus:outline-none focus:border-accent-teal text-xs leading-relaxed transition resize-none"
             />
           </div>
@@ -470,6 +481,24 @@ export function PostTravelPlanModal({
           </div>
         </form>
       </div>
+
+      <ImageCropperModal
+        isOpen={showTripCropper}
+        file={tripCropFile}
+        aspectRatio={4 / 3}
+        allowedAspectRatios={[
+          { label: '4:3 Standard', ratio: 4 / 3 },
+          { label: '1:1 Square', ratio: 1 },
+          { label: '16:9 Wide', ratio: 16 / 9 },
+        ]}
+        cropShape="rect"
+        title="Position Trip Photo"
+        onCrop={handleTripPhotoCropped}
+        onCancel={() => {
+          setShowTripCropper(false);
+          setTripCropFile(null);
+        }}
+      />
     </div>
   );
 }

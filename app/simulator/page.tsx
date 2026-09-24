@@ -480,7 +480,7 @@ export default function AdsSimulatorPage() {
               value={campaignName}
               onChange={(e) => setCampaignName(e.target.value)}
               className="w-full py-2 px-3 bg-surface-950 rounded-xl border border-surface-800 text-xs text-white font-mono focus:border-brand-500 outline-none"
-              placeholder="e.g. summer_dubai_q3"
+              placeholder="e.g. summer_campaign_q3"
             />
           </div>
         </div>
@@ -684,7 +684,7 @@ export default function AdsSimulatorPage() {
                 </div>
                 <div className="p-3 rounded-xl bg-surface-950 border border-surface-800">
                   <p className="font-bold text-white mb-1">4. Never</p>
-                  No male faces, no couples, no “dating app”, no WhatsApp number on the creative (policy + chaos).
+                  No couples, no dating framing, no WhatsApp number on the creative.
                 </div>
               </div>
             </div>

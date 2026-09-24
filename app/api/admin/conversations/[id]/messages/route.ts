@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
-import { requireStaff } from '@/lib/auth';
+import { requireStaff, signToken } from '@/lib/auth';
+import { sendPushToUser } from '@/lib/push-service';
 import { success, error, handleApiError } from '@/lib/api-helpers';
 
 export const dynamic = 'force-dynamic';
@@ -18,7 +19,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const staff = await requireStaff();
+    const staff = await requireStaff(req);
     const { id } = await params;
 
     // Agent access check
@@ -59,7 +60,19 @@ export async function GET(
         include: {
           customerUser: {
             include: {
-              profile: { select: { displayName: true, photos: { where: { isPrimary: true }, take: 1 } } },
+              profile: {
+                select: {
+                  displayName: true,
+                  bio: true,
+                  city: true,
+                  country: true,
+                  photos: { orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }], take: 3 },
+                },
+              },
+              identities: {
+                select: { kind: true, value: true, label: true },
+                take: 10,
+              },
               assignments: {
                 where: { status: 'active' },
                 include: { agent: { select: { id: true, displayName: true } } },
@@ -69,14 +82,66 @@ export async function GET(
           },
           representedProfileUser: {
             include: {
-              profile: { select: { displayName: true, photos: { where: { isPrimary: true }, take: 1 } } },
+              profile: {
+                select: {
+                  displayName: true,
+                  bio: true,
+                  city: true,
+                  country: true,
+                  isVerified: true,
+                  photos: { orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }], take: 3 },
+                  travelPlans: {
+                    where: { isActive: true },
+                    orderBy: { fromDate: 'asc' },
+                    take: 5,
+                    select: {
+                      id: true,
+                      country: true,
+                      city: true,
+                      fromDate: true,
+                      toDate: true,
+                      note: true,
+                      photoUrl: true,
+                      timing: true,
+                    },
+                  },
+                },
+              },
             },
           },
           participants: {
             include: {
               user: {
                 include: {
-                  profile: { select: { displayName: true, photos: { where: { isPrimary: true }, take: 1 } } },
+                  profile: {
+                    select: {
+                      displayName: true,
+                      bio: true,
+                      city: true,
+                      country: true,
+                      isVerified: true,
+                      photos: { orderBy: [{ isPrimary: 'desc' }, { sortOrder: 'asc' }], take: 3 },
+                      travelPlans: {
+                        where: { isActive: true },
+                        orderBy: { fromDate: 'asc' },
+                        take: 5,
+                        select: {
+                          id: true,
+                          country: true,
+                          city: true,
+                          fromDate: true,
+                          toDate: true,
+                          note: true,
+                          photoUrl: true,
+                          timing: true,
+                        },
+                      },
+                    },
+                  },
+                  identities: {
+                    select: { kind: true, value: true, label: true },
+                    take: 10,
+                  },
                   assignments: {
                     where: { status: 'active' },
                     include: { agent: { select: { displayName: true, id: true } } },
@@ -116,6 +181,14 @@ export async function GET(
         },
         data: { status: 'read' },
       });
+      if (conversation.representedProfileUserId) {
+        prisma.user
+          .update({
+            where: { id: conversation.representedProfileUserId },
+            data: { lastActiveAt: new Date() },
+          })
+          .catch(() => {});
+      }
     } catch {
       // Never fail the inbox thread because a read-receipt write locked.
     }
@@ -143,13 +216,29 @@ export async function GET(
           userId: customerPart.userId,
           displayName: customerPart.user.profile?.displayName || 'Customer',
           email: customerPart.user.email,
-          photo: customerPart.user.profile?.photos?.[0]?.filePath || null,
+          phone: customerPart.user.identities?.find((i: any) => i.kind === 'phone')?.value || null,
+          whatsapp: customerPart.user.identities?.find((i: any) => i.kind === 'whatsapp')?.value || null,
+          telegram: customerPart.user.identities?.find((i: any) => i.kind === 'telegram')?.value || null,
+          leadIdentities: customerPart.user.identities || [],
+          photo: customerPart.user.profile?.photos?.[0]?.filePath || (customerPart.user as any)?.avatarUrl || null,
+          photos: customerPart.user.profile?.photos?.map(p => p.filePath) || [],
           assignedAgent: assignedAgent?.displayName || null,
+          geoCity: customerPart.user.profile?.city || null,
+          geoCountry: customerPart.user.profile?.country || null,
+          bio: customerPart.user.profile?.bio || null,
+          lastActiveAt: customerPart.user.lastActiveAt?.toISOString?.() || customerPart.user.lastActiveAt || null,
         } : null,
         representedProfile: representedPart ? {
           userId: representedPart.userId,
           displayName: representedPart.user.profile?.displayName || 'Profile',
           photo: representedPart.user.profile?.photos?.[0]?.filePath || null,
+          photos: representedPart.user.profile?.photos?.map(p => p.filePath) || [],
+          bio: representedPart.user.profile?.bio || null,
+          city: representedPart.user.profile?.city || null,
+          country: representedPart.user.profile?.country || null,
+          isVerified: Boolean(representedPart.user.profile?.isVerified),
+          travelPlans: representedPart.user.profile?.travelPlans || [],
+          lastActiveAt: representedPart.user.lastActiveAt?.toISOString?.() || representedPart.user.lastActiveAt || null,
           isStaffAssisted: representedPart.user.profileOwnerType === 'staff_assisted',
         } : null,
         handledBy: assignedAgent?.displayName || null,
@@ -199,7 +288,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const staff = await requireStaff();
+    const staff = await requireStaff(req);
     const { id } = await params;
     const body = await req.json();
     const { content = '', onBehalfOfUserId, sentOnBehalfOf, mediaUrl = null, contentType = 'text' } = body;
@@ -240,6 +329,15 @@ export async function POST(
       // Look up staff-assisted participant or conversation.representedProfileUserId
       const assistedPart = conversation.participants.find(p => p.user.profileOwnerType === 'staff_assisted');
       targetProfileId = conversation.representedProfileUserId || assistedPart?.userId || null;
+    }
+
+    if (targetProfileId) {
+      prisma.user
+        .update({
+          where: { id: targetProfileId },
+          data: { lastActiveAt: new Date() },
+        })
+        .catch(() => {});
     }
 
     const effectiveContentType = (contentType === 'image' || contentType === 'video') ? contentType : (mediaUrl ? 'image' : 'text');
@@ -298,6 +396,33 @@ export async function POST(
       },
       data: { status: 'read' },
     });
+
+    // Dispatch real Web Push to customer so phone wakes up even when app is closed / locked
+    try {
+      const customerPart =
+        conversation.participants.find(
+          (p) => p.userId !== targetProfileId && p.user.profileOwnerType === 'self'
+        ) ||
+        conversation.participants.find((p) => p.userId !== targetProfileId);
+
+      if (customerPart) {
+        const personaName = message.onBehalfOf?.profile?.displayName || 'City Host';
+        const userToken = signToken({
+          id: customerPart.userId,
+          email: customerPart.user.email || '',
+          type: 'user',
+        });
+        sendPushToUser(customerPart.userId, {
+          title: personaName,
+          body: effectiveContent,
+          conversationId: id,
+          url: `/?tab=messenger&chat=${encodeURIComponent(id)}`,
+          token: userToken,
+        }).catch((err) => console.warn('[Push] Error sending push to user:', err));
+      }
+    } catch (err) {
+      console.warn('[Push] Failed to dispatch push to customer:', err);
+    }
 
     // Audit log
     await prisma.auditLog.create({

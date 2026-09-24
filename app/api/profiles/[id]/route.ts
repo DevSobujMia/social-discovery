@@ -17,11 +17,15 @@ export async function GET(
           { id },
           { userId: id },
         ],
-        isVisible: true,
         user: { status: 'active' },
       },
       include: {
         photos: { orderBy: { sortOrder: 'asc' } },
+        travelPlans: {
+          where: { isActive: true },
+          orderBy: { fromDate: 'asc' },
+          take: 1,
+        },
         user: { select: { lastActiveAt: true, id: true, createdAt: true } },
       },
     });
@@ -95,8 +99,24 @@ export async function GET(
       photos: profile.photos.map(p => ({
         id: p.id,
         url: p.filePath,
+        filePath: p.filePath,
         isPrimary: p.isPrimary,
       })),
+      photo:
+        profile.photos.find((p) => p.isPrimary)?.filePath ||
+        profile.photos[0]?.filePath ||
+        profile.travelPlans?.[0]?.photoUrl ||
+        null,
+      travel: profile.travelPlans?.[0]
+        ? {
+            city: profile.travelPlans[0].city,
+            country: profile.travelPlans[0].country,
+            fromDate: profile.travelPlans[0].fromDate.toISOString(),
+            toDate: profile.travelPlans[0].toDate.toISOString(),
+            note: profile.travelPlans[0].note,
+            photoUrl: profile.travelPlans[0].photoUrl,
+          }
+        : null,
       lastActive: profile.user?.lastActiveAt,
       memberSince: profile.user?.createdAt,
       interaction: interaction ? { type: interaction.type, status: interaction.status } : null,

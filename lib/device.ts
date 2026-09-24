@@ -10,9 +10,67 @@
  * server has a matching `LeadIdentity` row.
  */
 
-const DEVICE_KEY = 'heartlink_device';
-const LOGOUT_FLAG_KEY = 'heartlink_logged_out';
-const AD_PARAMS_KEY = 'heartlink_ad_params';
+import { canonicalCity, extractCityFromText } from './market';
+
+const CURRENT_PREFIX = 'cityhost_';
+const LEGACY_PREFIX = 'heartlink_';
+
+function readPrefixed(store: Storage, name: string): string | null {
+  return store.getItem(CURRENT_PREFIX + name) || store.getItem(LEGACY_PREFIX + name);
+}
+
+function writePrefixed(store: Storage, name: string, value: string): void {
+  store.setItem(CURRENT_PREFIX + name, value);
+  // Keep the previous key in sync so returning visitors still resume.
+  store.setItem(LEGACY_PREFIX + name, value);
+}
+
+function removePrefixed(store: Storage, name: string): void {
+  store.removeItem(CURRENT_PREFIX + name);
+  store.removeItem(LEGACY_PREFIX + name);
+}
+
+/** Browser storage with City Host keys, reading legacy Heartlink keys if needed. */
+export function readBrowserStore(
+  which: 'local' | 'session',
+  name: string
+): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const store = which === 'local' ? window.localStorage : window.sessionStorage;
+    return readPrefixed(store, name);
+  } catch {
+    return null;
+  }
+}
+
+export function writeBrowserStore(
+  which: 'local' | 'session',
+  name: string,
+  value: string
+): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const store = which === 'local' ? window.localStorage : window.sessionStorage;
+    writePrefixed(store, name, value);
+  } catch {
+    // Storage is optional.
+  }
+}
+
+export function removeBrowserStore(which: 'local' | 'session', name: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const store = which === 'local' ? window.localStorage : window.sessionStorage;
+    removePrefixed(store, name);
+  } catch {
+    // Storage is optional.
+  }
+}
+
+const DEVICE_KEY = 'device';
+const LOGOUT_FLAG_KEY = 'logged_out';
+const AD_PARAMS_KEY = 'ad_params';
 
 function randomToken(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -36,57 +94,37 @@ function randomToken(): string {
 export function getDeviceToken(): string | null {
   if (typeof window === 'undefined') return null;
 
-  try {
-    const existing = window.localStorage.getItem(DEVICE_KEY);
-    if (existing && existing.length >= 8) return existing;
-
-    const token = randomToken();
-    window.localStorage.setItem(DEVICE_KEY, token);
-    return token;
-  } catch {
-    return null;
+  const existing = readBrowserStore('local', DEVICE_KEY);
+  if (existing && existing.length >= 8) {
+    writeBrowserStore('local', DEVICE_KEY, existing);
+    return existing;
   }
+
+  const token = randomToken();
+  writeBrowserStore('local', DEVICE_KEY, token);
+  return token;
 }
 
 /** Replace the stored device token so a previous lead can no longer auto-resume. */
 export function rotateDeviceToken(): string | null {
   if (typeof window === 'undefined') return null;
-  try {
-    const token = randomToken();
-    window.localStorage.setItem(DEVICE_KEY, token);
-    return token;
-  } catch {
-    return null;
-  }
+  const token = randomToken();
+  writeBrowserStore('local', DEVICE_KEY, token);
+  return token;
 }
 
 /** Explicit Log Out — skip device-resume until they sign in again. */
 export function markExplicitLogout(): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(LOGOUT_FLAG_KEY, '1');
-  } catch {
-    // Flag is best-effort; rotate still breaks resume.
-  }
+  writeBrowserStore('local', LOGOUT_FLAG_KEY, '1');
   rotateDeviceToken();
 }
 
 export function clearExplicitLogout(): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.removeItem(LOGOUT_FLAG_KEY);
-  } catch {
-    // ignore
-  }
+  removeBrowserStore('local', LOGOUT_FLAG_KEY);
 }
 
 export function isExplicitLogout(): boolean {
-  if (typeof window === 'undefined') return false;
-  try {
-    return window.localStorage.getItem(LOGOUT_FLAG_KEY) === '1';
-  } catch {
-    return false;
-  }
+  return readBrowserStore('local', LOGOUT_FLAG_KEY) === '1';
 }
 
 // ============================================================
@@ -143,13 +181,21 @@ export function readAdParams(search: string): AdParams {
           ? 'male'
           : null;
 
+  const cityFromUtm =
+    extractCityFromText(params.get('utm_content')) ||
+    extractCityFromText(params.get('utm_campaign')) ||
+    extractCityFromText(params.get('utm_term'));
+
   return {
     gender: normalizedGender,
     minAge: toInt(params.get('amin') || params.get('minAge')),
     maxAge: toInt(params.get('amax') || params.get('maxAge')),
-    city: params.get('city'),
+    city:
+      canonicalCity(params.get('city')) ||
+      canonicalCity(params.get('dest') || params.get('destination')) ||
+      cityFromUtm,
     country: params.get('c') || params.get('country'),
-    destination: params.get('dest') || params.get('destination'),
+    destination: canonicalCity(params.get('dest') || params.get('destination') || params.get('city')),
     profileId: params.get('profile') || params.get('profileId') || params.get('user'),
   };
 }
@@ -160,12 +206,8 @@ export function storeAdParams(params: AdParams): void {
   const hasAnything = Object.values(params).some((v) => v !== null);
   if (!hasAnything) return;
 
-  try {
-    window.sessionStorage.setItem(AD_PARAMS_KEY, JSON.stringify(params));
-    window.localStorage.setItem(AD_PARAMS_KEY, JSON.stringify(params));
-  } catch {
-    // Storage is optional; the in-memory copy still works for this page view.
-  }
+  writeBrowserStore('session', AD_PARAMS_KEY, JSON.stringify(params));
+  writeBrowserStore('local', AD_PARAMS_KEY, JSON.stringify(params));
 }
 
 /** Ad params from this URL, falling back to whatever was stored earlier. */
@@ -180,8 +222,8 @@ export function loadAdParams(search?: string): AdParams {
 
   try {
     const raw =
-      window.sessionStorage.getItem(AD_PARAMS_KEY) ||
-      window.localStorage.getItem(AD_PARAMS_KEY);
+      readBrowserStore('session', AD_PARAMS_KEY) ||
+      readBrowserStore('local', AD_PARAMS_KEY);
     if (raw) return { ...EMPTY_AD_PARAMS, ...JSON.parse(raw) };
   } catch {
     // Fall through to empty.

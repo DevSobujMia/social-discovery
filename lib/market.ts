@@ -136,6 +136,46 @@ export function canonicalCity(raw?: string | null): string | null {
     .join(' ');
 }
 
+function allKnownCities(): Array<{ name: string; aliases: string[] }> {
+  const rows: Array<{ name: string; aliases: string[] }> = [];
+  for (const market of MARKETS) {
+    rows.push(...market.cities);
+  }
+  for (const loc of PROFILE_LOCATIONS) {
+    for (const name of loc.cities) {
+      if (!rows.some((c) => c.name.toLowerCase() === name.toLowerCase())) {
+        rows.push({ name, aliases: [name.toLowerCase()] });
+      }
+    }
+  }
+  return rows.sort((a, b) => b.name.length - a.name.length);
+}
+
+/** Spellings that should match a stored travel-plan city in the database. */
+export function cityMatchNames(raw?: string | null): string[] {
+  const canonical = canonicalCity(raw);
+  if (!canonical) return [];
+  const names = new Set<string>([canonical]);
+  for (const city of allKnownCities()) {
+    if (city.name.toLowerCase() === canonical.toLowerCase()) {
+      names.add(city.name);
+      for (const alias of city.aliases) names.add(alias);
+    }
+  }
+  return [...names];
+}
+
+/** Pull a known city out of an ad URL, UTM slug, or campaign name. */
+export function extractCityFromText(raw?: string | null): string | null {
+  if (!raw || !raw.trim()) return null;
+  const haystack = raw.toLowerCase().replace(/[_-]+/g, ' ');
+  for (const city of allKnownCities()) {
+    const needles = [city.name.toLowerCase(), ...city.aliases];
+    if (needles.some((n) => n && haystack.includes(n))) return city.name;
+  }
+  return null;
+}
+
 // ============================================================
 // PHONE NORMALISATION
 // ============================================================
@@ -176,6 +216,47 @@ const NATIONAL_NUMBER_LENGTH: Record<string, number> = {
   BD: 10,
 };
 
+const COUNTRY_NAME_TO_CODE: Record<string, string> = {
+  'SAUDI ARABIA': 'SA',
+  'SAUDI': 'SA',
+  'KSA': 'SA',
+  'UNITED ARAB EMIRATES': 'AE',
+  'EMIRATES': 'AE',
+  'UAE': 'AE',
+  'KUWAIT': 'KW',
+  'QATAR': 'QA',
+  'OMAN': 'OM',
+  'BAHRAIN': 'BH',
+  'INDIA': 'IN',
+  'PAKISTAN': 'PK',
+  'BANGLADESH': 'BD',
+  'SRI LANKA': 'LK',
+  'NEPAL': 'NP',
+  'PHILIPPINES': 'PH',
+  'EGYPT': 'EG',
+  'UNITED KINGDOM': 'GB',
+  'UK': 'GB',
+  'ENGLAND': 'GB',
+  'GREAT BRITAIN': 'GB',
+  'UNITED STATES': 'US',
+  'USA': 'US',
+  'CANADA': 'CA',
+  'AUSTRALIA': 'AU',
+  'GERMANY': 'DE',
+  'FRANCE': 'FR',
+  'SPAIN': 'ES',
+  'ITALY': 'IT',
+};
+
+export function resolveCountryCode(country?: string | null): string | null {
+  if (!country) return null;
+  const upper = country.trim().toUpperCase();
+  if (COUNTRY_NAME_TO_CODE[upper]) return COUNTRY_NAME_TO_CODE[upper];
+  const directMatch = DIAL_CODES.find((d) => d.country === upper);
+  if (directMatch) return directMatch.country;
+  return null;
+}
+
 /**
  * Normalise a phone number to `+<digits>` so the same person entering
  * `050 123 4567`, `00971501234567` and `+971 50 123 4567` collapses to one
@@ -200,35 +281,38 @@ export function normalizePhone(
   }
 
   if (hasPlus) {
-    return digits.length >= 7 ? `+${digits}` : null;
+    return digits.length >= 6 ? `+${digits}` : null;
   }
 
-  const dialFor = (country?: string | null): string | null => {
-    if (!country) return null;
-    const match = DIAL_CODES.find(
-      (d) => d.country === country.trim().toUpperCase()
-    );
+  const resolvedCode = resolveCountryCode(defaultCountry);
+  const dialFor = (code?: string | null): string | null => {
+    if (!code) return null;
+    const match = DIAL_CODES.find((d) => d.country === code);
     return match ? match.dial : null;
   };
 
-  const dial = dialFor(defaultCountry);
+  const dial = dialFor(resolvedCode);
 
-  // Local format with a trunk 0, e.g. UAE "0501234567".
+  // Local format with a trunk 0, e.g. UAE/Saudi "0501234567".
   if (digits.startsWith('0')) {
     const national = digits.replace(/^0+/, '');
     if (dial && national.length >= 6) return `+${dial}${national}`;
-    return national.length >= 7 ? `+${national}` : null;
+    // If no dial code provided, but matches Gulf mobile pattern 05xxxxxxxx (10 digits)
+    if (!dial && digits.startsWith('05') && digits.length === 10) {
+      return `+966${national}`;
+    }
+    return national.length >= 6 ? `+${national}` : null;
   }
 
   // Bare national number, e.g. UAE "501234567" or India "9876543210".
-  if (dial) {
-    const expected = NATIONAL_NUMBER_LENGTH[defaultCountry!.toUpperCase()];
+  if (dial && resolvedCode) {
+    const expected = NATIONAL_NUMBER_LENGTH[resolvedCode];
     if (!expected || digits.length <= expected) {
       return `+${dial}${digits}`;
     }
   }
 
-  return digits.length >= 8 ? `+${digits}` : null;
+  return digits.length >= 6 ? `+${digits}` : null;
 }
 
 /** Infer the home country of a lead from their phone number. */

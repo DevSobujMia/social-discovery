@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
 import Link from 'next/link';
 import {
   Users,
@@ -26,6 +26,7 @@ import {
   Sliders,
   Check,
   ChevronLeft,
+  Menu,
   X,
   Phone,
   MessageCircle,
@@ -45,6 +46,8 @@ import {
   Monitor,
   Tablet,
   Pencil,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import {
   COUNTRY_CITIES,
@@ -52,16 +55,22 @@ import {
   DESTINATION_PHOTOS,
   TIMING_OPTIONS,
 } from '@/components/PostTravelPlanModal';
+import { ImageCropperModal } from '@/components/ImageCropperModal';
+import ProfileViewModal from '@/components/ProfileViewModal';
 import {
   chatBubbleTime,
   chatListTime,
   DayChip,
   dayLabel,
+  isUserOnline,
+  lastSeenTime,
   MessageTicks,
   sameCalendarDay,
 } from '../components/messaging';
 import { publishChatSync, subscribeChatSync } from '@/lib/chat-sync';
 import { mergeChatThread } from '@/lib/chat-thread';
+import { extractCityFromText } from '@/lib/market';
+import { ensureChatNotifyPermission, notifyIncomingChat } from '@/lib/chat-notify';
 
 type LeadContactChannel = 'phone' | 'whatsapp' | 'telegram';
 
@@ -72,6 +81,41 @@ type LeadContactChannel = 'phone' | 'whatsapp' | 'telegram';
  */
 function digitsOf(value: string): string {
   return value.replace(/[^0-9]/g, '');
+}
+
+function isUploadedPhoto(url?: string | null): boolean {
+  return Boolean(url && url.startsWith('/api/uploads/'));
+}
+
+function isStockDestinationPhoto(url?: string | null): boolean {
+  if (!url) return false;
+  return Object.values(DESTINATION_PHOTOS).includes(url);
+}
+
+/** Keep real uploads / custom URLs when the operator only changes city. */
+function photoAfterCityChange(prevUrl: string, newCity: string): string {
+  if (isUploadedPhoto(prevUrl)) return prevUrl;
+  if (prevUrl && !isStockDestinationPhoto(prevUrl)) return prevUrl;
+  return DESTINATION_PHOTOS[newCity] || prevUrl || '';
+}
+
+function leadCityOf(c: any): string {
+  return (
+    c?.customer?.attribution?.city ||
+    c?.customer?.geoCity ||
+    extractCityFromText(c?.customer?.source?.utm_content) ||
+    extractCityFromText(c?.customer?.source?.utm_campaign) ||
+    ''
+  );
+}
+
+function leadAdOf(c: any): string {
+  return (
+    c?.customer?.attribution?.ad ||
+    c?.customer?.source?.utm_campaign ||
+    c?.customer?.source?.utm_content ||
+    ''
+  );
 }
 
 function telHref(value: string): string {
@@ -100,15 +144,32 @@ function contactHref(channel: LeadContactChannel, value: string): string {
 
 export default function AdminDashboardPage() {
   // Staff auth state
-  const [currentStaff, setCurrentStaff] = useState<any>(null);
-  const [loadingStaff, setLoadingStaff] = useState(true);
+  const [currentStaff, setCurrentStaff] = useState<any>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = localStorage.getItem('cityhost_staff_user');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [loadingStaff, setLoadingStaff] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    try {
+      return !Boolean(localStorage.getItem('cityhost_staff_user'));
+    } catch {
+      return true;
+    }
+  });
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  const [adminPassKey, setAdminPassKey] = useState('');
   const [loginError, setLoginError] = useState('');
   const [loggingIn, setLoggingIn] = useState(false);
 
   // Active tab
   const [activeTab, setActiveTab] = useState<'analytics' | 'users' | 'inbox' | 'trips' | 'campaigns' | 'reports'>('inbox');
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   // Analytics data
   const [analytics, setAnalytics] = useState<any>(null);
@@ -141,6 +202,10 @@ export default function AdminDashboardPage() {
   const tripPhotoFileRef = useRef<HTMLInputElement>(null);
   const [deletingTripId, setDeletingTripId] = useState<string | null>(null);
   const [savingTrip, setSavingTrip] = useState(false);
+  const [tripActionPlan, setTripActionPlan] = useState<any | null>(null);
+  const [editTripPhotoCleared, setEditTripPhotoCleared] = useState(false);
+  const profilePhotoReplaceRef = useRef<HTMLInputElement>(null);
+  const [replacingProfilePhoto, setReplacingProfilePhoto] = useState(false);
 
   // Edit Travel Plan State
   const [editingTrip, setEditingTrip] = useState<any | null>(null);
@@ -190,17 +255,34 @@ export default function AdminDashboardPage() {
   const adminMediaInputRef = useRef<HTMLInputElement>(null);
   const adminTextareaRef = useRef<HTMLTextAreaElement>(null);
   const [uploadingAdminMedia, setUploadingAdminMedia] = useState(false);
+  const [requestingVerification, setRequestingVerification] = useState(false);
+  // Modals for inspecting customer / represented profile
+  const [inspectingCustomer, setInspectingCustomer] = useState<any | null>(null);
+  const [inspectingProfile, setInspectingProfile] = useState<any | null>(null);
+  // Admin Image Cropper state
+  const [adminCropperFile, setAdminCropperFile] = useState<File | null>(null);
+  const [adminCropperAction, setAdminCropperAction] = useState<
+    'profile_create' | 'profile_replace' | 'trip_create' | 'trip_edit' | null
+  >(null);
   const selectedChatRef = useRef(selectedChat);
-  selectedChatRef.current = selectedChat;
-
   const currentStaffRef = useRef(currentStaff);
-  currentStaffRef.current = currentStaff;
   /** Stop inbox polls after 401 / logout until staff signs in again. */
   const staffAuthDeadRef = useRef(false);
   const staffAuthReadyRef = useRef(false);
+  const staffUnreadSigRef = useRef<Record<string, number>>({});
 
   const activeTabRef = useRef(activeTab);
-  activeTabRef.current = activeTab;
+
+  // Keep refs in sync with state without mutating during render
+  useLayoutEffect(() => {
+    selectedChatRef.current = selectedChat;
+  }, [selectedChat]);
+  useLayoutEffect(() => {
+    currentStaffRef.current = currentStaff;
+  }, [currentStaff]);
+  useLayoutEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
 
   // Campaigns
   const [campaigns, setCampaigns] = useState<any[]>([]);
@@ -221,50 +303,95 @@ export default function AdminDashboardPage() {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  // Fetch current authenticated staff
-  const clearStaffSession = useCallback(() => {
-    staffAuthDeadRef.current = true;
-    setCurrentStaff(null);
-    currentStaffRef.current = null;
-    setSelectedChat(null);
-    setConversations([]);
-    setChatMessages([]);
-    fetch('/api/auth/logout', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+  const getStoredStaffToken = (): string | null => {
+    if (typeof window === 'undefined') return null;
+    try {
+      return localStorage.getItem('cityhost_staff_token');
+    } catch {
+      return null;
+    }
+  };
+
+  const setStoredStaffToken = (token: string | null) => {
+    if (typeof window === 'undefined') return;
+    try {
+      if (token) localStorage.setItem('cityhost_staff_token', token);
+      else localStorage.removeItem('cityhost_staff_token');
+    } catch {}
+  };
+
+  /**
+   * Resilient admin fetch: attaches credentials and Bearer token so session
+   * is never lost across app restarts, PWA closes, or cookie flushes.
+   */
+  const adminFetch = useCallback(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const token = getStoredStaffToken();
+    const headers = new Headers(init?.headers);
+    if (token && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${token}`);
+    }
+    return fetch(input, {
+      ...init,
+      headers,
       credentials: 'include',
-      body: JSON.stringify({ scope: 'staff' }),
-    }).catch(() => {});
+    });
+  }, []);
+
+  // Fetch current authenticated staff (Never auto logout on 401 unless user explicitly logs out)
+  const clearStaffSession = useCallback(() => {
+    const hasToken = Boolean(getStoredStaffToken());
+    if (!hasToken) {
+      staffAuthDeadRef.current = true;
+      setCurrentStaff(null);
+      currentStaffRef.current = null;
+      try {
+        localStorage.removeItem('cityhost_staff_user');
+      } catch {}
+    }
   }, []);
 
   const fetchStaffSession = useCallback(async () => {
     try {
-      setLoadingStaff(true);
-      const res = await fetch('/api/auth/me', { credentials: 'include', cache: 'no-store' });
+      if (!currentStaffRef.current) setLoadingStaff(true);
+      const res = await adminFetch('/api/auth/me', {
+        cache: 'no-store',
+      });
       const data = await res.json();
-      // Staff session is independent of any guest/user cookie on this browser.
       if (data.success && data.data?.staff) {
         staffAuthDeadRef.current = false;
         setCurrentStaff(data.data.staff);
         currentStaffRef.current = data.data.staff;
+        try {
+          localStorage.setItem('cityhost_staff_user', JSON.stringify(data.data.staff));
+        } catch {}
       } else {
-        staffAuthDeadRef.current = true;
-        setCurrentStaff(null);
-        currentStaffRef.current = null;
+        const token = getStoredStaffToken();
+        if (!token && res.status === 401) {
+          staffAuthDeadRef.current = true;
+          setCurrentStaff(null);
+          currentStaffRef.current = null;
+          try {
+            localStorage.removeItem('cityhost_staff_user');
+          } catch {}
+        }
       }
     } catch {
-      staffAuthDeadRef.current = true;
-      setCurrentStaff(null);
-      currentStaffRef.current = null;
+      if (!currentStaffRef.current && !getStoredStaffToken()) {
+        staffAuthDeadRef.current = true;
+      }
     } finally {
       staffAuthReadyRef.current = true;
       setLoadingStaff(false);
     }
-  }, []);
+  }, [adminFetch]);
 
   useEffect(() => {
     fetchStaffSession();
   }, [fetchStaffSession]);
+
+  useEffect(() => {
+    if (currentStaff) void ensureChatNotifyPermission();
+  }, [currentStaff]);
 
   // Ensure window/document scrolling is never trapped on admin panel
   useEffect(() => {
@@ -294,21 +421,32 @@ export default function AdminDashboardPage() {
     setLoginError('');
     setLoggingIn(true);
     try {
+      const payload = adminPassKey.trim()
+        ? { key: adminPassKey.trim(), password: adminPassKey.trim(), code: adminPassKey.trim() }
+        : { email: loginEmail.trim(), password: loginPassword.trim() };
+
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email: loginEmail, password: loginPassword }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
-      if (data.success && data.data?.staff) {
+      if (data.success && (data.data?.staff || data.data?.type === 'staff')) {
+        const token = data.data?.token;
+        if (token) setStoredStaffToken(token);
         staffAuthDeadRef.current = false;
         staffAuthReadyRef.current = true;
-        setCurrentStaff(data.data.staff);
-        currentStaffRef.current = data.data.staff;
-        loadAllData();
+        if (data.data.staff) {
+          try {
+            localStorage.setItem('cityhost_staff_user', JSON.stringify(data.data.staff));
+          } catch {}
+          setCurrentStaff(data.data.staff);
+          currentStaffRef.current = data.data.staff;
+        }
+        await loadAllData();
       } else {
-        setLoginError(data.error?.message || 'Invalid staff credentials');
+        setLoginError(data.error?.message || 'Invalid administrator password');
       }
     } catch {
       setLoginError('Error connecting to authentication server');
@@ -319,11 +457,15 @@ export default function AdminDashboardPage() {
 
   // Staff logout
   const handleStaffLogout = async () => {
+    setStoredStaffToken(null);
+    try {
+      localStorage.removeItem('cityhost_staff_user');
+    } catch {}
     await fetch('/api/auth/logout', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scope: 'staff' }),
-    });
+    }).catch(() => {});
     staffAuthDeadRef.current = true;
     setCurrentStaff(null);
     currentStaffRef.current = null;
@@ -336,7 +478,7 @@ export default function AdminDashboardPage() {
   const fetchAnalytics = async () => {
     try {
       setLoadingAnalytics(true);
-      const res = await fetch('/api/admin/analytics');
+      const res = await adminFetch('/api/admin/analytics');
       const data = await res.json();
       if (data.success) {
         setAnalytics(data.data);
@@ -355,7 +497,7 @@ export default function AdminDashboardPage() {
       if (userSearch) params.set('search', userSearch);
       if (userStatusFilter) params.set('status', userStatusFilter);
       params.set('limit', '100');
-      const res = await fetch(`/api/admin/users?${params.toString()}`);
+      const res = await adminFetch(`/api/admin/users?${params.toString()}`);
       const data = await res.json();
       if (data.success) {
         setUsersList(data.data?.users || (Array.isArray(data.data) ? data.data : []));
@@ -370,8 +512,8 @@ export default function AdminDashboardPage() {
   const fetchTravelPlans = async () => {
     try {
       const [plansRes, usersRes] = await Promise.all([
-        fetch('/api/admin/travel-plans?includePast=true'),
-        fetch('/api/admin/users?ownerType=staff_assisted&limit=100'),
+        adminFetch('/api/admin/travel-plans?includePast=true'),
+        adminFetch('/api/admin/users?ownerType=staff_assisted&limit=100'),
       ]);
       const plansData = await plansRes.json();
       const usersData = await usersRes.json();
@@ -387,17 +529,29 @@ export default function AdminDashboardPage() {
     }
   };
 
-  const handleUploadProfilePhotoFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAdminFileSelected = (
+    e: React.ChangeEvent<HTMLInputElement>,
+    action: 'profile_create' | 'profile_replace' | 'trip_create' | 'trip_edit'
+  ) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setAdminCropperFile(file);
+    setAdminCropperAction(action);
+    e.target.value = '';
+  };
 
+  const handleUploadProfilePhotoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    handleAdminFileSelected(e, 'profile_create');
+  };
+
+  const uploadProfilePhotoFile = async (file: File) => {
     setUploadingProfilePhoto(true);
     try {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('type', 'curated_profile');
 
-      const res = await fetch('/api/upload', {
+      const res = await adminFetch('/api/upload', {
         method: 'POST',
         body: formData,
       });
@@ -426,7 +580,7 @@ export default function AdminDashboardPage() {
     }
     setSavingProfile(true);
     try {
-      const res = await fetch('/api/admin/users', {
+      const res = await adminFetch('/api/admin/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -478,7 +632,7 @@ export default function AdminDashboardPage() {
       ...prev,
       country: newCountry,
       city: firstCity,
-      photoUrl: DESTINATION_PHOTOS[firstCity] || prev.photoUrl,
+      photoUrl: DESTINATION_PHOTOS[firstCity] || '',
     }));
   };
 
@@ -486,18 +640,20 @@ export default function AdminDashboardPage() {
     setTripForm((prev) => ({
       ...prev,
       city: newCity,
-      photoUrl: DESTINATION_PHOTOS[newCity] || prev.photoUrl,
+      photoUrl: DESTINATION_PHOTOS[newCity] || '',
     }));
   };
 
-  const handleUploadTripPhotoFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const handleUploadTripPhotoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    handleAdminFileSelected(e, 'trip_create');
+  };
+
+  const uploadTripPhotoFile = async (file: File) => {
     setUploadingTripPhoto(true);
     try {
       const fd = new FormData();
       fd.append('file', file);
-      const res = await fetch('/api/upload', { method: 'POST', body: fd });
+      const res = await adminFetch('/api/upload', { method: 'POST', body: fd });
       const data = await res.json();
       if (data.success && data.data?.url) {
         setTripForm((prev) => ({ ...prev, photoUrl: data.data.url }));
@@ -541,7 +697,7 @@ export default function AdminDashboardPage() {
 
     setSavingTrip(true);
     try {
-      const res = await fetch('/api/admin/travel-plans', {
+      const res = await adminFetch('/api/admin/travel-plans', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -576,14 +732,39 @@ export default function AdminDashboardPage() {
     }
   };
 
-  const handleDeleteTrip = async (id: string) => {
-    setDeletingTripId(id);
+  const handleHideTrip = async (plan: any, hidden: boolean) => {
+    setDeletingTripId(plan.id);
     try {
-      const res = await fetch(`/api/admin/travel-plans?id=${id}`, { method: 'DELETE' });
+      const res = await adminFetch('/api/admin/travel-plans', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: plan.id, isActive: !hidden }),
+      });
       const data = await res.json();
       if (data.success) {
-        showToast('Trip plan removed');
-        setTravelPlans((prev) => prev.filter((p) => p.id !== id));
+        setTravelPlans((prev) =>
+          prev.map((p) => (p.id === plan.id ? { ...p, isActive: !hidden } : p))
+        );
+        showToast(hidden ? 'Trip hidden from Find. Photo kept.' : 'Trip visible on Find again.');
+      } else {
+        showToast(data.error?.message || 'Could not update trip');
+      }
+    } catch {
+      showToast('Could not update trip');
+    } finally {
+      setDeletingTripId(null);
+      setTripActionPlan(null);
+    }
+  };
+
+  const handleDeleteTrip = async (plan: any) => {
+    setDeletingTripId(plan.id);
+    try {
+      const res = await adminFetch(`/api/admin/travel-plans?id=${plan.id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        showToast('Trip plan removed. Uploaded photos stay on disk.');
+        setTravelPlans((prev) => prev.filter((p) => p.id !== plan.id));
       } else {
         showToast(data.error?.message || 'Could not remove trip');
       }
@@ -591,10 +772,62 @@ export default function AdminDashboardPage() {
       showToast('Could not remove trip');
     } finally {
       setDeletingTripId(null);
+      setTripActionPlan(null);
+    }
+  };
+
+  const handleReplaceCuratedPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    const selected = curatedProfiles.find((u) => u.profileId === tripForm.profileId);
+    if (!file || !selected?.id) return;
+    handleAdminFileSelected(e, 'profile_replace');
+  };
+
+  const uploadReplaceCuratedPhoto = async (file: File) => {
+    const selected = curatedProfiles.find((u) => u.profileId === tripForm.profileId);
+    if (!selected?.id) return;
+    setReplacingProfilePhoto(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const uploadRes = await adminFetch('/api/upload', { method: 'POST', body: fd });
+      const uploadData = await uploadRes.json();
+      const url = uploadData.data?.url || uploadData.data?.filePath;
+      if (!uploadData.success || !url) {
+        showToast(uploadData.error?.message || 'Could not upload photo');
+        return;
+      }
+      const res = await adminFetch(`/api/admin/users/${selected.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photoUrl: url }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setCuratedProfiles((prev) =>
+          prev.map((u) => (u.id === selected.id ? { ...u, photo: url } : u))
+        );
+        setTravelPlans((prev) =>
+          prev.map((p) =>
+            p.profileId === selected.profileId && !isUploadedPhoto(p.photoUrl)
+              ? { ...p, photo: url }
+              : p
+          )
+        );
+        showToast('Profile photo updated');
+      } else {
+        showToast(data.error?.message || 'Could not save profile photo');
+      }
+    } catch {
+      showToast('Could not replace profile photo');
+    } finally {
+      setReplacingProfilePhoto(false);
+      if (profilePhotoReplaceRef.current) profilePhotoReplaceRef.current.value = '';
     }
   };
 
   const handleStartEditTrip = (plan: any) => {
+    setEditTripPhotoCleared(false);
     setEditingTrip(plan);
     const isPopularCountry = POPULAR_COUNTRIES.includes(plan.country);
     const citiesForCountry = COUNTRY_CITIES[plan.country] || [];
@@ -628,7 +861,7 @@ export default function AdminDashboardPage() {
       ...prev,
       country: newCountry,
       city: firstCity,
-      photoUrl: DESTINATION_PHOTOS[firstCity] || prev.photoUrl,
+      photoUrl: photoAfterCityChange(prev.photoUrl, firstCity),
     }));
   };
 
@@ -636,18 +869,20 @@ export default function AdminDashboardPage() {
     setEditTripForm((prev) => ({
       ...prev,
       city: newCity,
-      photoUrl: DESTINATION_PHOTOS[newCity] || prev.photoUrl,
+      photoUrl: photoAfterCityChange(prev.photoUrl, newCity),
     }));
   };
 
-  const handleUploadEditTripPhotoFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const handleUploadEditTripPhotoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    handleAdminFileSelected(e, 'trip_edit');
+  };
+
+  const uploadEditTripPhotoFile = async (file: File) => {
     setUploadingEditTripPhoto(true);
     try {
       const fd = new FormData();
       fd.append('file', file);
-      const res = await fetch('/api/upload', { method: 'POST', body: fd });
+      const res = await adminFetch('/api/upload', { method: 'POST', body: fd });
       const data = await res.json();
       if (data.success && data.data?.url) {
         setEditTripForm((prev) => ({ ...prev, photoUrl: data.data.url }));
@@ -660,6 +895,22 @@ export default function AdminDashboardPage() {
     } finally {
       setUploadingEditTripPhoto(false);
       if (editTripPhotoFileRef.current) editTripPhotoFileRef.current.value = '';
+    }
+  };
+
+  const handleAdminCropped = async (croppedFile: File) => {
+    const action = adminCropperAction;
+    setAdminCropperAction(null);
+    setAdminCropperFile(null);
+
+    if (action === 'profile_create') {
+      await uploadProfilePhotoFile(croppedFile);
+    } else if (action === 'profile_replace') {
+      await uploadReplaceCuratedPhoto(croppedFile);
+    } else if (action === 'trip_create') {
+      await uploadTripPhotoFile(croppedFile);
+    } else if (action === 'trip_edit') {
+      await uploadEditTripPhotoFile(croppedFile);
     }
   };
 
@@ -683,16 +934,21 @@ export default function AdminDashboardPage() {
         city: effectiveCity,
         timing: editTripForm.timing,
         note: editTripForm.note.trim() || null,
-        photoUrl: editTripForm.photoUrl.trim() || null,
         isActive: editTripForm.isActive,
       };
+
+      if (editTripForm.photoUrl.trim()) {
+        payload.photoUrl = editTripForm.photoUrl.trim();
+      } else if (editTripPhotoCleared) {
+        payload.clearPhoto = true;
+      }
 
       if (editTripForm.timing === 'custom' && editTripForm.fromDate && editTripForm.toDate) {
         payload.fromDate = editTripForm.fromDate;
         payload.toDate = editTripForm.toDate;
       }
 
-      const res = await fetch('/api/admin/travel-plans', {
+      const res = await adminFetch('/api/admin/travel-plans', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -715,8 +971,7 @@ export default function AdminDashboardPage() {
   const fetchMasterInbox = useCallback(async () => {
     if (!staffAuthReadyRef.current || staffAuthDeadRef.current || !currentStaffRef.current) return;
     try {
-      const res = await fetch('/api/admin/conversations', {
-        credentials: 'include',
+      const res = await adminFetch('/api/admin/conversations', {
         cache: 'no-store',
       });
       if (res.status === 401) {
@@ -735,11 +990,26 @@ export default function AdminDashboardPage() {
               new Date(a.lastMessageAt || a.updatedAt || 0).getTime()
           );
         setConversations(normalized);
+        for (const c of normalized) {
+          const unread = c.totalUnread || 0;
+          const prev = staffUnreadSigRef.current[c.id];
+          const viewing = selectedChatRef.current?.id === c.id;
+          if (prev !== undefined && unread > prev && unread > 0) {
+            notifyIncomingChat({
+              conversationId: c.id,
+              title: c.customer?.displayName || 'New chat',
+              body: c.lastMessagePreview || 'New message',
+              viewingThisChat: viewing,
+              url: '/admin',
+            });
+          }
+          staffUnreadSigRef.current[c.id] = unread;
+        }
       }
     } catch {
       // Quiet during cold compile / brief disconnects.
     }
-  }, [clearStaffSession]);
+  }, [clearStaffSession, adminFetch]);
 
   const fetchMasterInboxRef = useRef(fetchMasterInbox);
   fetchMasterInboxRef.current = fetchMasterInbox;
@@ -747,8 +1017,7 @@ export default function AdminDashboardPage() {
   const fetchChatMessages = useCallback(async (id: string, isSilent = false) => {
     if (!staffAuthReadyRef.current || staffAuthDeadRef.current || !currentStaffRef.current) return;
     try {
-      const res = await fetch(`/api/admin/conversations/${id}/messages`, {
-        credentials: 'include',
+      const res = await adminFetch(`/api/admin/conversations/${id}/messages`, {
         cache: 'no-store',
       });
       if (res.status === 401) {
@@ -769,14 +1038,14 @@ export default function AdminDashboardPage() {
     } catch {
       // Quiet during cold compile / brief disconnects.
     }
-  }, [clearStaffSession]);
+  }, [clearStaffSession, adminFetch]);
 
   const fetchChatMessagesRef = useRef(fetchChatMessages);
   fetchChatMessagesRef.current = fetchChatMessages;
 
   const handleMarkAllRead = async () => {
     try {
-      const res = await fetch('/api/admin/conversations/mark-all-read', { method: 'POST' });
+      const res = await adminFetch('/api/admin/conversations/mark-all-read', { method: 'POST' });
       const data = await res.json();
       if (data.success) {
         setConversations((prev) => prev.map((c) => ({ ...c, totalUnread: 0 })));
@@ -790,9 +1059,35 @@ export default function AdminDashboardPage() {
     }
   };
 
+  const handleRequestHumanVerification = async (convId: string) => {
+    if (!convId || requestingVerification) return;
+    setRequestingVerification(true);
+    try {
+      const res = await adminFetch(`/api/admin/conversations/${convId}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: '__REQUEST_HUMAN_VERIFICATION__',
+          contentType: 'system',
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('🛡️ Human Verification requested! Customer will see the safety modal.');
+        fetchChatMessages(convId);
+      } else {
+        showToast(data.error?.message || 'Failed to send verification request');
+      }
+    } catch {
+      showToast('Connection error');
+    } finally {
+      setRequestingVerification(false);
+    }
+  };
+
   const fetchCampaigns = async () => {
     try {
-      const res = await fetch('/api/admin/campaigns');
+      const res = await adminFetch('/api/admin/campaigns');
       const data = await res.json();
       if (data.success) {
         setCampaigns(Array.isArray(data.data) ? data.data : (data.data?.campaigns || []));
@@ -804,7 +1099,7 @@ export default function AdminDashboardPage() {
 
   const fetchReports = async () => {
     try {
-      const res = await fetch('/api/admin/reports');
+      const res = await adminFetch('/api/admin/reports');
       const data = await res.json();
       if (data.success) {
         setReports(Array.isArray(data.data) ? data.data : (data.data?.reports || []));
@@ -894,7 +1189,16 @@ export default function AdminDashboardPage() {
           const custEmail = (c.customer?.email || '').toLowerCase();
           const profName = (c.representedProfile?.displayName || '').toLowerCase();
           const preview = (c.lastMessagePreview || '').toLowerCase();
-          if (!custName.includes(q) && !custEmail.includes(q) && !profName.includes(q) && !preview.includes(q)) {
+          const city = leadCityOf(c).toLowerCase();
+          const ad = leadAdOf(c).toLowerCase();
+          if (
+            !custName.includes(q) &&
+            !custEmail.includes(q) &&
+            !profName.includes(q) &&
+            !preview.includes(q) &&
+            !city.includes(q) &&
+            !ad.includes(q)
+          ) {
             return false;
           }
         }
@@ -916,6 +1220,12 @@ export default function AdminDashboardPage() {
     () => conversations.reduce((sum, c) => sum + (c.totalUnread || 0), 0),
     [conversations]
   );
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const base = 'City Host Staff';
+    document.title = totalInboxUnread > 0 ? `(${totalInboxUnread}) 🔴 City Host Admin` : base;
+  }, [totalInboxUnread]);
 
   const formatInboxTime = (dateStr?: string | null) => {
     if (!dateStr) return '';
@@ -942,7 +1252,20 @@ export default function AdminDashboardPage() {
     if (typeof window !== 'undefined') {
       window.history.pushState({ adminChatId: c.id }, '', window.location.href);
     }
+    setTimeout(() => {
+      adminTextareaRef.current?.focus();
+    }, 60);
   };
+
+  // Auto-focus reply input when admin selects a conversation
+  useEffect(() => {
+    if (selectedChat) {
+      const timer = setTimeout(() => {
+        adminTextareaRef.current?.focus();
+      }, 80);
+      return () => clearTimeout(timer);
+    }
+  }, [selectedChat?.id]);
 
   const handleCloseSelectedChat = () => {
     setSelectedChat(null);
@@ -981,6 +1304,10 @@ export default function AdminDashboardPage() {
 
     const tick = async () => {
       if (stopped) return;
+      if (typeof document !== 'undefined' && document.hidden) {
+        if (!stopped) timer = setTimeout(tick, 8000);
+        return;
+      }
       const chatId = selectedChatRef.current?.id;
       if (
         chatId &&
@@ -1007,18 +1334,24 @@ export default function AdminDashboardPage() {
 
     const tick = async () => {
       if (stopped) return;
+      if (typeof document !== 'undefined' && document.hidden) {
+        if (staffAuthReadyRef.current && !staffAuthDeadRef.current && currentStaffRef.current) {
+          await fetchMasterInboxRef.current();
+        }
+        if (!stopped) timer = setTimeout(tick, 2200);
+        return;
+      }
       if (
         staffAuthReadyRef.current &&
         !staffAuthDeadRef.current &&
-        currentStaffRef.current &&
-        activeTabRef.current === 'inbox'
+        currentStaffRef.current
       ) {
         await fetchMasterInboxRef.current();
       }
-      if (!stopped) timer = setTimeout(tick, 2000);
+      if (!stopped) timer = setTimeout(tick, 1200);
     };
 
-    timer = setTimeout(tick, 2000);
+    timer = setTimeout(tick, 400);
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
@@ -1039,10 +1372,19 @@ export default function AdminDashboardPage() {
     document.addEventListener('visibilitychange', onVis);
     const unsub = subscribeChatSync((event) => {
       if (staffAuthDeadRef.current || !currentStaffRef.current) return;
-      if (event.conversationId) {
+      if (event.type === 'conversation_updated' && event.conversationId) {
         fetchMasterInboxRef.current();
-        if (selectedChatRef.current?.id === event.conversationId) {
+        const viewing = selectedChatRef.current?.id === event.conversationId;
+        if (viewing) {
           fetchChatMessagesRef.current(event.conversationId, true);
+        } else if (event.source === 'customer') {
+          notifyIncomingChat({
+            conversationId: event.conversationId,
+            title: 'New chat',
+            body: event.preview || 'New message',
+            viewingThisChat: false,
+            url: '/admin',
+          });
         }
       }
     });
@@ -1052,6 +1394,20 @@ export default function AdminDashboardPage() {
       unsub();
     };
   }, []);
+
+  const lastTypingBroadcastRef = useRef<number>(0);
+  const handleBroadcastStaffTyping = (convId: string, name?: string | null) => {
+    const now = Date.now();
+    if (now - lastTypingBroadcastRef.current > 2500) {
+      lastTypingBroadcastRef.current = now;
+      publishChatSync({
+        type: 'typing',
+        conversationId: convId,
+        senderName: name || 'Host',
+        source: 'staff',
+      });
+    }
+  };
 
   // Send staff reply with instant optimistic UI (text, photo, or video)
   const handleSendStaffReply = async (
@@ -1125,10 +1481,9 @@ export default function AdminDashboardPage() {
         onBehalfOfUserId: representedProfileId,
       };
 
-      const res = await fetch(`/api/admin/conversations/${selectedChat.id}/messages`, {
+      const res = await adminFetch(`/api/admin/conversations/${selectedChat.id}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
         body: JSON.stringify(payload),
       });
       const data = await res.json();
@@ -1169,7 +1524,7 @@ export default function AdminDashboardPage() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const res = await fetch('/api/upload/chat-media', {
+      const res = await adminFetch('/api/upload/chat-media', {
         method: 'POST',
         body: formData,
       });
@@ -1193,7 +1548,7 @@ export default function AdminDashboardPage() {
   const handleToggleUserStatus = async (userId: string, currentStatus: string) => {
     const nextStatus = currentStatus === 'active' ? 'suspended' : 'active';
     try {
-      const res = await fetch(`/api/admin/users/${userId}`, {
+      const res = await adminFetch(`/api/admin/users/${userId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: nextStatus }),
@@ -1213,7 +1568,7 @@ export default function AdminDashboardPage() {
   const handleCreateCampaign = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch('/api/admin/campaigns', {
+      const res = await adminFetch('/api/admin/campaigns', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1239,7 +1594,14 @@ export default function AdminDashboardPage() {
 
   // Copy campaign share link
   const handleCopyLink = (utmCampaign: string) => {
-    const link = `${window.location.origin}/?utm_source=facebook&utm_medium=cpc&utm_campaign=${utmCampaign}`;
+    const qs = new URLSearchParams({
+      utm_source: 'facebook',
+      utm_medium: 'cpc',
+      utm_campaign: utmCampaign,
+    });
+    const city = extractCityFromText(utmCampaign);
+    if (city) qs.set('city', city);
+    const link = `${window.location.origin}/?${qs.toString()}`;
     navigator.clipboard.writeText(link);
     setCopiedLink(utmCampaign);
     showToast('Ad URL copied to clipboard! 📋');
@@ -1275,37 +1637,26 @@ export default function AdminDashboardPage() {
             </div>
           )}
 
-          <form onSubmit={handleStaffLogin} className="space-y-3.5 text-xs">
+          <form onSubmit={handleStaffLogin} className="space-y-4 text-xs">
             <div>
-              <label className="input-label">Admin Email</label>
-              <input
-                type="email"
-                required
-                autoComplete="username"
-                value={loginEmail}
-                onChange={(e) => setLoginEmail(e.target.value)}
-                placeholder="admin@yourdomain.com"
-                className="input-field text-xs py-2.5"
-              />
-            </div>
-            <div>
-              <label className="input-label">Password</label>
+              <label className="input-label mb-1.5 block">Admin Access Password</label>
               <input
                 type="password"
                 required
+                autoFocus
                 autoComplete="current-password"
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                placeholder="••••••••"
-                className="input-field text-xs py-2.5"
+                value={adminPassKey}
+                onChange={(e) => setAdminPassKey(e.target.value)}
+                placeholder="Enter password"
+                className="input-field text-sm py-3"
               />
             </div>
             <button
               type="submit"
-              disabled={loggingIn}
-              className="btn-primary w-full py-2.5 text-xs font-semibold mt-2"
+              disabled={loggingIn || !adminPassKey.trim()}
+              className="btn-primary w-full py-3 text-xs font-bold mt-1 cursor-pointer shadow-lg shadow-brand-500/20"
             >
-              {loggingIn ? 'Authenticating...' : 'Sign In as Administrator'}
+              {loggingIn ? 'Authenticating...' : 'Unlock Admin Panel'}
             </button>
           </form>
 
@@ -1332,50 +1683,66 @@ export default function AdminDashboardPage() {
       )}
 
       {/* Top Staff Navbar */}
-      <header className="sticky top-0 z-30 bg-surface-900/90 backdrop-blur-xl border-b border-surface-800 px-4 py-3">
+      <header className="sticky top-0 z-30 bg-surface-900/90 backdrop-blur-xl border-b border-surface-800 px-3 md:px-4 py-2.5 md:py-3">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-accent-teal to-blue-600 flex items-center justify-center">
+          <div className="flex items-center gap-2.5 md:gap-3 min-w-0">
+            {/* Mobile Navigation Trigger Button */}
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(true)}
+              className="md:hidden w-9 h-9 rounded-xl bg-surface-800/90 border border-surface-700/70 flex items-center justify-center text-surface-200 hover:text-white hover:bg-surface-700 active:scale-95 transition cursor-pointer relative shrink-0"
+              aria-label="Open navigation menu"
+              title="Open menu"
+            >
+              <Menu className="w-5 h-5" />
+              {totalInboxUnread > 0 && (
+                <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-rose-500 ring-2 ring-surface-900 animate-pulse shadow-md shadow-rose-500/50" />
+              )}
+            </button>
+
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-accent-teal to-blue-600 flex items-center justify-center shrink-0">
               <Shield className="w-4 h-4 text-white" />
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h1 className="text-base font-bold text-white tracking-tight">City Host Admin</h1>
-                <span className="badge-teal text-[10px] uppercase font-bold px-2 py-0.5">
+                <h1 className="text-sm md:text-base font-bold text-white tracking-tight truncate">City Host Admin</h1>
+                <span className="badge-teal text-[9px] md:text-[10px] uppercase font-bold px-1.5 md:px-2 py-0.5 shrink-0">
                   Admin
                 </span>
               </div>
-              <p className="text-[11px] text-surface-400">
+              <p className="text-[10px] md:text-[11px] text-surface-400 truncate">
                 Direct Mode • <strong className="text-white">{currentStaff?.displayName || 'Administrator'}</strong>
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 text-xs">
-          {process.env.NODE_ENV !== 'production' && (
-            <Link
-              href="/simulator"
-              className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-brand-500 to-accent-teal hover:from-brand-400 hover:to-accent-teal/90 text-white font-bold text-xs flex items-center gap-1.5 shadow-md shadow-brand-500/20 transition"
-              title="Launch Real Ads & Customer Journey Simulator"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-              <span>Ads Simulator</span>
-            </Link>
-          )}
+          <div className="flex items-center gap-1.5 md:gap-2 text-xs shrink-0">
+            {process.env.NODE_ENV !== 'production' && (
+              <Link
+                href="/simulator"
+                className="hidden sm:flex px-2.5 md:px-3 py-1.5 rounded-lg bg-gradient-to-r from-brand-500 to-accent-teal hover:from-brand-400 hover:to-accent-teal/90 text-white font-bold text-xs items-center gap-1.5 shadow-md shadow-brand-500/20 transition"
+                title="Launch Real Ads & Customer Journey Simulator"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                <span className="hidden md:inline">Ads Simulator</span>
+              </Link>
+            )}
 
             <Link
               href="/"
               target="_blank"
-              className="btn-ghost py-1.5 px-3 rounded-lg text-xs flex items-center gap-1"
+              className="btn-ghost py-1.5 px-2.5 md:px-3 rounded-lg text-xs flex items-center gap-1"
+              title="View User App in new tab"
             >
-              <span>View User App</span>
+              <span className="hidden sm:inline">View User App</span>
               <ExternalLink className="w-3.5 h-3.5" />
             </Link>
 
             <button
               onClick={handleStaffLogout}
-              className="p-1.5 rounded-lg bg-surface-800 hover:bg-surface-700 text-surface-400 hover:text-red-400 border border-surface-700 transition"
+              className="p-1.5 rounded-lg bg-surface-800 hover:bg-surface-700 text-surface-400 hover:text-red-400 border border-surface-700 transition cursor-pointer"
               title="Logout administrator"
+              aria-label="Logout"
             >
               <LogOut className="w-4 h-4" />
             </button>
@@ -1383,10 +1750,191 @@ export default function AdminDashboardPage() {
         </div>
       </header>
 
+      {/* Mobile Navigation Drawer */}
+      {mobileMenuOpen && (
+        <div className="fixed inset-0 z-50 md:hidden flex">
+          {/* Backdrop */}
+          <div
+            className="fixed inset-0 bg-black/75 backdrop-blur-sm transition-opacity animate-fade-in"
+            onClick={() => setMobileMenuOpen(false)}
+          />
+
+          {/* Slide-out Drawer Panel */}
+          <div className="relative w-[280px] max-w-[85vw] h-full bg-surface-900 border-r border-surface-800 shadow-2xl flex flex-col z-10 animate-slide-right">
+            {/* Drawer Header */}
+            <div className="p-4 border-b border-surface-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-accent-teal to-blue-600 flex items-center justify-center shrink-0">
+                  <Shield className="w-4 h-4 text-white" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm font-bold text-white truncate">City Host Admin</span>
+                    <span className="badge-teal text-[9px] uppercase font-bold px-1.5 py-0.5 shrink-0">Admin</span>
+                  </div>
+                  <p className="text-[11px] text-surface-400 truncate">
+                    {currentStaff?.displayName || 'Administrator'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMobileMenuOpen(false)}
+                className="p-1.5 rounded-lg text-surface-400 hover:text-white hover:bg-surface-800 transition cursor-pointer shrink-0"
+                aria-label="Close menu"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Navigation Menu List */}
+            <div className="flex-1 overflow-y-auto p-3 space-y-1">
+              <div className="text-[10px] font-bold text-surface-500 uppercase tracking-wider px-3 py-1.5">
+                Management Modules
+              </div>
+
+              <button
+                onClick={() => {
+                  setActiveTab('inbox');
+                  fetchMasterInbox();
+                  setMobileMenuOpen(false);
+                }}
+                className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                  activeTab === 'inbox'
+                    ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30 font-bold'
+                    : 'text-surface-300 hover:text-white hover:bg-surface-800/70'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <MessageSquare className="w-4 h-4 text-accent-teal shrink-0" />
+                  <span>Master Inbox</span>
+                </div>
+                {totalInboxUnread > 0 && (
+                  <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-rose-600 text-white text-[10px] font-extrabold flex items-center justify-center shadow-md shadow-rose-600/40 animate-pulse">
+                    {totalInboxUnread > 9 ? '9+' : totalInboxUnread}
+                  </span>
+                )}
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab('analytics');
+                  setMobileMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                  activeTab === 'analytics'
+                    ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30 font-bold'
+                    : 'text-surface-300 hover:text-white hover:bg-surface-800/70'
+                }`}
+              >
+                <BarChart3 className="w-4 h-4 text-indigo-400 shrink-0" />
+                <span>Dashboard & KPIs</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab('users');
+                  setMobileMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                  activeTab === 'users'
+                    ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30 font-bold'
+                    : 'text-surface-300 hover:text-white hover:bg-surface-800/70'
+                }`}
+              >
+                <Users className="w-4 h-4 text-sky-400 shrink-0" />
+                <span>User Management</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab('trips');
+                  fetchTravelPlans();
+                  setMobileMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                  activeTab === 'trips'
+                    ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30 font-bold'
+                    : 'text-surface-300 hover:text-white hover:bg-surface-800/70'
+                }`}
+              >
+                <Plane className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>Travel Plans</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab('campaigns');
+                  setMobileMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                  activeTab === 'campaigns'
+                    ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30 font-bold'
+                    : 'text-surface-300 hover:text-white hover:bg-surface-800/70'
+                }`}
+              >
+                <Megaphone className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>Campaigns & Tracking</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab('reports');
+                  setMobileMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                  activeTab === 'reports'
+                    ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30 font-bold'
+                    : 'text-surface-300 hover:text-white hover:bg-surface-800/70'
+                }`}
+              >
+                <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+                <span>Moderation & Reports</span>
+              </button>
+
+              {process.env.NODE_ENV !== 'production' && (
+                <Link
+                  href="/simulator"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="flex items-center gap-3 px-3.5 py-3 rounded-xl text-xs font-semibold text-amber-300 hover:text-white bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 transition shadow-sm"
+                >
+                  <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>Ads Simulator 🚀</span>
+                </Link>
+              )}
+            </div>
+
+            {/* Drawer Footer Actions */}
+            <div className="p-3 border-t border-surface-800 space-y-2 bg-surface-950/40">
+              <Link
+                href="/"
+                target="_blank"
+                onClick={() => setMobileMenuOpen(false)}
+                className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-semibold text-surface-300 hover:text-white bg-surface-800/80 hover:bg-surface-700 transition"
+              >
+                <span>View User App</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </Link>
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  handleStaffLogout();
+                }}
+                className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-semibold text-rose-400 hover:text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 transition cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Logout Administrator</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Main CRM Body */}
       <div className="flex-1 max-w-7xl w-full mx-auto p-4 md:py-6 flex flex-col md:flex-row gap-6">
-        {/* Navigation Sidebar */}
-        <aside className="w-full md:w-56 shrink-0 flex flex-row md:flex-col gap-1 overflow-x-auto pb-2 md:pb-0 scrollbar-none">
+        {/* Navigation Sidebar (Desktop only) */}
+        <aside className="hidden md:flex md:w-56 shrink-0 flex-col gap-1">
           <button
             onClick={() => {
               setActiveTab('inbox');
@@ -1401,7 +1949,7 @@ export default function AdminDashboardPage() {
             <MessageSquare className="w-4 h-4" />
             <span>Master Inbox</span>
             {totalInboxUnread > 0 && (
-              <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-500 text-surface-950 text-[10px] font-bold flex items-center justify-center">
+              <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-extrabold flex items-center justify-center shadow-md shadow-rose-600/40 animate-pulse">
                 {totalInboxUnread > 9 ? '9+' : totalInboxUnread}
               </span>
             )}
@@ -2033,7 +2581,7 @@ export default function AdminDashboardPage() {
                     <button
                       type="button"
                       onClick={() => setInboxFilter('chats')}
-                      className={`py-1.5 px-3 rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                      className={`py-1.5 px-3 rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer relative ${
                         inboxFilter === 'chats'
                           ? 'bg-accent-teal text-surface-950 font-bold shadow-md'
                           : 'text-surface-400 hover:text-white hover:bg-surface-800/40'
@@ -2046,6 +2594,11 @@ export default function AdminDashboardPage() {
                       }`}>
                         {activeChatsCount}
                       </span>
+                      {totalInboxUnread > 0 && (
+                        <span className="min-w-[16px] h-4 px-1 rounded-full bg-rose-600 text-white text-[9px] font-extrabold flex items-center justify-center animate-pulse">
+                          {totalInboxUnread > 9 ? '9+' : totalInboxUnread}
+                        </span>
+                      )}
                     </button>
 
                     <button
@@ -2074,7 +2627,7 @@ export default function AdminDashboardPage() {
                       type="text"
                       value={inboxSearch}
                       onChange={(e) => setInboxSearch(e.target.value)}
-                      placeholder="Search customer, profile, message..."
+                      placeholder="Search customer, city, ad, message..."
                       className="w-full bg-surface-950 border border-surface-800 rounded-xl pl-9 pr-8 py-1.5 text-xs text-white placeholder-surface-500 focus:outline-none focus:border-accent-teal transition"
                     />
                     {inboxSearch && (
@@ -2132,20 +2685,28 @@ export default function AdminDashboardPage() {
                             isSelected
                               ? 'bg-surface-800/90'
                               : hasUnread
-                                ? 'bg-surface-900/50 hover:bg-surface-800/60'
+                                ? 'bg-surface-900/80 hover:bg-surface-800/80 border-l-2 border-l-rose-500'
                                 : 'hover:bg-surface-800/40'
                           }`}
                         >
                           {/* Customer Avatar */}
-                          <div className="w-10 h-10 rounded-full ring-2 ring-surface-800 overflow-hidden bg-emerald-700/30 text-emerald-300 font-bold flex items-center justify-center text-xs shrink-0 shadow-sm">
-                            {c.customer?.photo || c.customer?.avatarUrl ? (
-                              <img
-                                src={c.customer.photo || c.customer.avatarUrl}
-                                alt={customerName}
-                                className="w-full h-full object-cover"
+                          <div className="relative shrink-0">
+                            <div className="w-10 h-10 rounded-full ring-2 ring-surface-800 overflow-hidden bg-emerald-700/30 text-emerald-300 font-bold flex items-center justify-center text-xs shadow-sm">
+                              {c.customer?.photo || c.customer?.photos?.[0] || c.customer?.avatarUrl ? (
+                                <img
+                                  src={c.customer.photo || c.customer?.photos?.[0] || c.customer.avatarUrl}
+                                  alt={customerName}
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                customerName.charAt(0).toUpperCase()
+                              )}
+                            </div>
+                            {isUserOnline(c.customer?.lastActiveAt) && (
+                              <span
+                                className="absolute bottom-0 right-0 w-3 h-3 bg-accent-teal border-2 border-surface-900 rounded-full shadow-sm"
+                                title="Online now"
                               />
-                            ) : (
-                              customerName.charAt(0).toUpperCase()
                             )}
                           </div>
 
@@ -2160,9 +2721,9 @@ export default function AdminDashboardPage() {
                                 <span className="text-surface-500 font-normal text-xs shrink-0">to</span>
                                 <span className="inline-flex items-center gap-1 min-w-0">
                                   <span className="w-4 h-4 rounded-full ring-1 ring-surface-700 overflow-hidden bg-brand-500/20 text-pink-300 font-semibold flex items-center justify-center text-[8px] shrink-0">
-                                    {c.representedProfile?.photo || c.representedProfile?.avatarUrl ? (
+                                    {c.representedProfile?.photo || c.representedProfile?.photos?.[0] || c.representedProfile?.avatarUrl ? (
                                       <img
-                                        src={c.representedProfile.photo || c.representedProfile.avatarUrl}
+                                        src={c.representedProfile.photo || c.representedProfile?.photos?.[0] || c.representedProfile.avatarUrl}
                                         alt={profileName}
                                         className="w-full h-full object-cover"
                                       />
@@ -2175,24 +2736,45 @@ export default function AdminDashboardPage() {
                               </span>
                               <span
                                 className={`text-[11px] shrink-0 tabular-nums ${
-                                  hasUnread ? 'text-emerald-400 font-semibold' : 'text-surface-500'
+                                  hasUnread ? 'text-rose-400 font-bold' : 'text-surface-500'
                                 }`}
                               >
                                 {chatListTime(c.lastMessageAt || c.updatedAt)}
                               </span>
                             </div>
-                            <div className="flex items-center gap-1.5 mt-0.5">
-                              <span className="text-[10px] font-mono text-surface-400 shrink-0">
-                                ID: #{c.customer?.userId ? c.customer.userId.slice(-6) : 'guest'}
-                              </span>
-                              <span className="text-surface-600 text-[10px]">·</span>
-                              <p
-                                className={`text-[12px] truncate ${
-                                  hasUnread ? 'text-surface-200 font-medium' : 'text-surface-500'
-                                }`}
-                              >
-                                {c.lastMessagePreview || 'New conversation'}
-                              </p>
+                            <div className="flex items-center justify-between gap-1.5 mt-0.5 min-w-0">
+                              <div className="flex items-center gap-1.5 min-w-0 flex-1 truncate">
+                                {leadCityOf(c) ? (
+                                  <span className="inline-flex items-center gap-0.5 shrink-0 text-[10px] font-semibold text-accent-teal">
+                                    <MapPin className="w-3 h-3" />
+                                    {leadCityOf(c)}
+                                  </span>
+                                ) : null}
+                                {leadAdOf(c) ? (
+                                  <span
+                                    className="inline-flex items-center gap-0.5 shrink-0 max-w-[110px] truncate text-[10px] font-medium text-brand-300"
+                                    title={leadAdOf(c)}
+                                  >
+                                    <Megaphone className="w-3 h-3 shrink-0" />
+                                    <span className="truncate">{leadAdOf(c)}</span>
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] text-surface-500 shrink-0">Direct</span>
+                                )}
+                                <span className="text-surface-600 text-[10px] shrink-0">·</span>
+                                <p
+                                  className={`text-[12px] truncate ${
+                                    hasUnread ? 'text-white font-medium' : 'text-surface-500'
+                                  }`}
+                                >
+                                  {c.lastMessagePreview || 'New conversation'}
+                                </p>
+                              </div>
+                              {hasUnread && (
+                                <span className="min-w-[18px] h-4.5 px-1.5 flex items-center justify-center rounded-full bg-rose-600 text-white text-[10px] font-extrabold shrink-0 shadow-md shadow-rose-600/40">
+                                  {unread > 99 ? '99+' : unread}
+                                </span>
+                              )}
                             </div>
                           </div>
                         </button>
@@ -2220,37 +2802,76 @@ export default function AdminDashboardPage() {
 
                         {/* Customer Avatar & Profile Avatar side by side with arrow */}
                         <div className="flex items-center gap-2 shrink-0">
-                          {/* Customer Avatar */}
-                          <div className="flex items-center gap-1.5">
-                            <div className="w-10 h-10 rounded-full ring-2 ring-emerald-500/60 overflow-hidden bg-emerald-800/40 text-emerald-300 font-bold flex items-center justify-center text-xs shrink-0 shadow-md">
-                              {selectedChat.customer?.photo || selectedChat.customer?.avatarUrl ? (
-                                <img
-                                  src={selectedChat.customer.photo || selectedChat.customer.avatarUrl}
-                                  alt={selectedChat.customer.displayName}
-                                  className="w-full h-full object-cover"
+                          {/* Clickable Customer Info Button */}
+                          <button
+                            type="button"
+                            onClick={() => setInspectingCustomer(selectedChat.customer)}
+                            className="flex items-center gap-1.5 p-1 -m-1 rounded-xl hover:bg-surface-800/70 transition cursor-pointer text-left group"
+                            title="Click to view full customer & lead details"
+                          >
+                            <div className="relative shrink-0">
+                              <div className="w-10 h-10 rounded-full ring-2 ring-emerald-500/60 group-hover:ring-emerald-400 overflow-hidden bg-emerald-800/40 text-emerald-300 font-bold flex items-center justify-center text-xs shrink-0 shadow-md transition">
+                                {selectedChat.customer?.photo || selectedChat.customer?.photos?.[0] || selectedChat.customer?.avatarUrl ? (
+                                  <img
+                                    src={selectedChat.customer.photo || selectedChat.customer?.photos?.[0] || selectedChat.customer.avatarUrl}
+                                    alt={selectedChat.customer.displayName}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  (selectedChat.customer?.displayName || 'C').charAt(0).toUpperCase()
+                                )}
+                              </div>
+                              {isUserOnline(selectedChat.customer?.lastActiveAt) && (
+                                <span
+                                  className="absolute bottom-0 right-0 w-3 h-3 bg-accent-teal border-2 border-surface-900 rounded-full shadow-sm"
+                                  title="Online now"
                                 />
-                              ) : (
-                                (selectedChat.customer?.displayName || 'C').charAt(0).toUpperCase()
                               )}
                             </div>
                             <div className="hidden sm:block">
-                              <p className="text-xs font-bold text-white truncate max-w-[100px]">
-                                {selectedChat.customer?.displayName || 'Customer'}
-                              </p>
-                              <p className="text-[10px] text-surface-400 font-mono">
-                                ID: #{selectedChat.customer?.userId ? selectedChat.customer.userId.slice(-6) : 'guest'}
-                              </p>
+                              <div className="flex items-center gap-1">
+                                <p className="text-xs font-bold text-white truncate max-w-[100px] group-hover:text-emerald-300 transition">
+                                  {selectedChat.customer?.displayName || 'Customer'}
+                                </p>
+                                <Eye className="w-3 h-3 text-surface-400 group-hover:text-emerald-300 transition shrink-0" />
+                              </div>
+                              <div className="flex items-center gap-1 text-[10px]">
+                                {isUserOnline(selectedChat.customer?.lastActiveAt) ? (
+                                  <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                                    Online
+                                  </span>
+                                ) : selectedChat.customer?.lastActiveAt ? (
+                                  <span className="text-surface-400 font-mono">
+                                    Active {lastSeenTime(selectedChat.customer.lastActiveAt)}
+                                  </span>
+                                ) : (
+                                  <span className="text-surface-400 font-mono">
+                                    ID: #{selectedChat.customer?.userId ? selectedChat.customer.userId.slice(-6) : 'guest'}
+                                  </span>
+                                )}
+                              </div>
+                              {(leadCityOf(selectedChat) || leadAdOf(selectedChat)) ? (
+                                <p className="text-[10px] text-surface-300 truncate max-w-[160px]" title={[leadCityOf(selectedChat), leadAdOf(selectedChat)].filter(Boolean).join(' · ')}>
+                                  {[leadCityOf(selectedChat), leadAdOf(selectedChat)].filter(Boolean).join(' · ')}
+                                </p>
+                              ) : null}
                             </div>
-                          </div>
+                          </button>
 
                           <span className="text-surface-400 text-xs font-bold px-1">➔</span>
 
-                          {/* Profile Avatar */}
-                          <div className="flex items-center gap-1.5">
-                            <div className="w-10 h-10 rounded-full ring-2 ring-brand-500/60 overflow-hidden bg-brand-500/30 text-pink-300 font-bold flex items-center justify-center text-xs shrink-0 shadow-md">
-                              {selectedChat.representedProfile?.photo || selectedChat.representedProfile?.avatarUrl ? (
+                          {/* Clickable Profile Info Button */}
+                          <button
+                            type="button"
+                            onClick={() => setInspectingProfile(selectedChat.representedProfile)}
+                            className="flex items-center gap-1.5 p-1 -m-1 rounded-xl hover:bg-surface-800/70 transition cursor-pointer text-left group"
+                            title="Click to view represented profile details & travel plans"
+                          >
+                            <div className="w-10 h-10 rounded-full ring-2 ring-brand-500/60 group-hover:ring-brand-400 overflow-hidden bg-brand-500/30 text-pink-300 font-bold flex items-center justify-center text-xs shrink-0 shadow-md transition">
+                              {selectedChat.representedProfile?.photo || selectedChat.representedProfile?.photos?.[0] || selectedChat.representedProfile?.avatarUrl ? (
                                 <img
-                                  src={selectedChat.representedProfile.photo || selectedChat.representedProfile.avatarUrl}
+                                  src={selectedChat.representedProfile.photo || selectedChat.representedProfile?.photos?.[0] || selectedChat.representedProfile.avatarUrl}
                                   alt={selectedChat.representedProfile.displayName}
                                   className="w-full h-full object-cover"
                                 />
@@ -2259,14 +2880,17 @@ export default function AdminDashboardPage() {
                               )}
                             </div>
                             <div className="min-w-0">
-                              <p className="text-xs font-bold text-accent-teal truncate max-w-[100px]">
-                                {selectedChat.representedProfile?.displayName || 'Profile'}
-                              </p>
+                              <div className="flex items-center gap-1">
+                                <p className="text-xs font-bold text-accent-teal truncate max-w-[100px] group-hover:text-pink-300 transition">
+                                  {selectedChat.representedProfile?.displayName || 'Profile'}
+                                </p>
+                                <Eye className="w-3 h-3 text-surface-400 group-hover:text-pink-300 transition shrink-0" />
+                              </div>
                               <p className="text-[10px] text-emerald-400 font-medium">
                                 Replying as {selectedChat.representedProfile?.displayName || 'Profile'}
                               </p>
                             </div>
-                          </div>
+                          </button>
                         </div>
                       </div>
 
@@ -2276,6 +2900,16 @@ export default function AdminDashboardPage() {
                             Direct Reply
                           </span>
                         )}
+                        <button
+                          type="button"
+                          onClick={() => handleRequestHumanVerification(selectedChat.id)}
+                          disabled={requestingVerification}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 text-xs font-bold transition shadow-sm cursor-pointer disabled:opacity-50"
+                          title="Send a safety verification popup to customer to confirm they are human and get their phone number"
+                        >
+                          <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
+                          <span>{requestingVerification ? 'Sending...' : 'Ask Human Verification'}</span>
+                        </button>
                       </div>
                     </div>
 
@@ -2291,6 +2925,17 @@ export default function AdminDashboardPage() {
                         </div>
                       ) : (
                         chatMessages.map((msg, idx) => {
+                          if (msg.content === '__REQUEST_HUMAN_VERIFICATION__') {
+                            return (
+                              <div key={msg.id} className="flex justify-center my-2.5">
+                                <span className="px-3.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[11px] font-semibold flex items-center gap-1.5 shadow-sm">
+                                  <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
+                                  <span>Human Verification requested</span>
+                                </span>
+                              </div>
+                            );
+                          }
+
                           const isStaff = !!msg.senderStaffId || !!msg.senderStaff || msg.status === 'sending';
                           const prev = idx > 0 ? chatMessages[idx - 1] : null;
                           const showDay = !prev || !sameCalendarDay(prev.createdAt, msg.createdAt);
@@ -2396,12 +3041,16 @@ export default function AdminDashboardPage() {
                         <div className="flex-1 min-h-[44px] bg-surface-800 border border-surface-700/70 focus-within:border-surface-500 rounded-[22px] px-4 py-1.5 flex items-center">
                           <textarea
                             ref={adminTextareaRef}
+                            autoFocus
                             rows={1}
                             value={staffReplyInput}
                             onChange={(e) => {
                               setStaffReplyInput(e.target.value);
                               e.target.style.height = 'auto';
                               e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
+                              if (selectedChat?.id) {
+                                handleBroadcastStaffTyping(selectedChat.id, selectedChat.representedProfile?.displayName);
+                              }
                             }}
                             onKeyDown={(e) => {
                               const isMobile =
@@ -2459,8 +3108,7 @@ export default function AdminDashboardPage() {
               <div>
                 <h2 className="text-xl font-bold text-white">Travel profiles</h2>
                 <p className="text-xs text-surface-400">
-                  Create Europe / America home profiles traveling soon to Dubai (or other Gulf cities).
-                  Meta ads target Indian &amp; Pakistani expats in Ads Manager — not as profile home countries.
+                  Create verified travel profiles with planned destinations and travel notes.
                 </p>
               </div>
 
@@ -2533,7 +3181,7 @@ export default function AdminDashboardPage() {
                     value={profileForm.bio}
                     onChange={(e) => setProfileForm({ ...profileForm, bio: e.target.value })}
                     className="input-field py-2 text-xs min-h-[70px]"
-                    placeholder="Traveling soon to Dubai…"
+                    placeholder="Traveling soon…"
                   />
                 </div>
                 <div className="sm:col-span-2 space-y-1.5">
@@ -2640,7 +3288,7 @@ export default function AdminDashboardPage() {
                     value={profileForm.travelNote}
                     onChange={(e) => setProfileForm({ ...profileForm, travelNote: e.target.value })}
                     className="input-field py-2 text-xs"
-                    placeholder="Traveling soon to Dubai."
+                    placeholder="Traveling soon."
                   />
                 </div>
                 <div className="sm:col-span-2 flex justify-end">
@@ -2686,6 +3334,49 @@ export default function AdminDashboardPage() {
                       </option>
                     ))}
                   </select>
+                  {tripForm.profileId ? (
+                    <div className="mt-2 flex items-center gap-3">
+                      {(() => {
+                        const selected = curatedProfiles.find((u) => u.profileId === tripForm.profileId);
+                        if (!selected) return null;
+                        return (
+                          <>
+                            <div className="w-12 h-12 rounded-xl overflow-hidden bg-surface-800 border border-surface-700 shrink-0">
+                              {selected.photo ? (
+                                <img src={selected.photo} alt="" className="w-full h-full object-cover" />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center text-surface-500 text-xs font-bold">
+                                  {(selected.displayName || '?').charAt(0)}
+                                </div>
+                              )}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-[11px] text-white font-semibold truncate">{selected.displayName}</p>
+                              <p className="text-[10px] text-surface-400">
+                                Replace the profile photo without deleting trips.
+                              </p>
+                            </div>
+                            <input
+                              ref={profilePhotoReplaceRef}
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={handleReplaceCuratedPhoto}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => profilePhotoReplaceRef.current?.click()}
+                              disabled={replacingProfilePhoto}
+                              className="btn-ghost py-1.5 px-3 text-[11px] border border-surface-700 hover:border-brand-teal/60 flex items-center gap-1.5 shrink-0"
+                            >
+                              <Upload className="w-3.5 h-3.5 text-brand-teal" />
+                              {replacingProfilePhoto ? 'Uploading…' : 'Replace photo'}
+                            </button>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  ) : null}
                 </div>
 
                 {/* 2. Destination Country */}
@@ -2825,6 +3516,9 @@ export default function AdminDashboardPage() {
                     </label>
                     <span className="text-[11px] text-surface-400">Upload photo file or paste image URL</span>
                   </div>
+                  <p className="text-[10px] text-surface-500">
+                    Changing city keeps an uploaded photo. Landmark stock photos never overwrite a real upload.
+                  </p>
                   <div className="flex items-center gap-3">
                     <div className="relative w-12 h-12 rounded-xl bg-surface-800 border border-surface-700 flex items-center justify-center shrink-0 overflow-hidden shadow-inner group">
                       {tripForm.photoUrl ? (
@@ -2839,7 +3533,15 @@ export default function AdminDashboardPage() {
                           />
                           <button
                             type="button"
-                            onClick={() => setTripForm({ ...tripForm, photoUrl: '' })}
+                            onClick={() => {
+                              if (
+                                isUploadedPhoto(tripForm.photoUrl) &&
+                                !window.confirm('Clear this uploaded trip photo from the form? The file stays on disk until you save a replacement.')
+                              ) {
+                                return;
+                              }
+                              setTripForm({ ...tripForm, photoUrl: '' });
+                            }}
                             className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex items-center justify-center text-red-400 transition-opacity"
                             title="Remove photo"
                           >
@@ -2884,7 +3586,7 @@ export default function AdminDashboardPage() {
                           </>
                         )}
                       </button>
-                      {DESTINATION_PHOTOS[tripForm.city] && tripForm.photoUrl !== DESTINATION_PHOTOS[tripForm.city] && (
+                      {DESTINATION_PHOTOS[tripForm.city] && tripForm.photoUrl !== DESTINATION_PHOTOS[tripForm.city] && !isUploadedPhoto(tripForm.photoUrl) && (
                         <button
                           type="button"
                           onClick={() => setTripForm({ ...tripForm, photoUrl: DESTINATION_PHOTOS[tripForm.city] })}
@@ -2966,6 +3668,16 @@ export default function AdminDashboardPage() {
                             {plan.timing.replace('_', ' ')}
                           </span>
                         ) : null}
+                        {plan.isActive === false ? (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 font-medium">
+                            Hidden
+                          </span>
+                        ) : null}
+                        {isUploadedPhoto(plan.photoUrl) ? (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-brand-500/15 text-brand-300 border border-brand-500/30 font-medium">
+                            Real photo
+                          </span>
+                        ) : null}
                       </div>
                       <p className="text-[11px] text-surface-400 mt-0.5">
                         {new Date(plan.fromDate).toLocaleDateString()} – {new Date(plan.toDate).toLocaleDateString()}
@@ -2984,10 +3696,20 @@ export default function AdminDashboardPage() {
 
                     <button
                       type="button"
-                      onClick={() => handleDeleteTrip(plan.id)}
+                      onClick={() => handleHideTrip(plan, plan.isActive !== false)}
+                      disabled={deletingTripId === plan.id}
+                      className="p-2 rounded-lg text-surface-400 hover:text-amber-300 hover:bg-amber-500/10 transition cursor-pointer shrink-0"
+                      title={plan.isActive === false ? 'Show on Find again' : 'Hide from Find (keeps photo)'}
+                    >
+                      {plan.isActive === false ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setTripActionPlan(plan)}
                       disabled={deletingTripId === plan.id}
                       className="p-2 rounded-lg text-surface-400 hover:text-red-400 hover:bg-red-500/10 transition cursor-pointer shrink-0"
-                      title="Delete trip plan"
+                      title="Remove trip plan"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -3069,7 +3791,7 @@ export default function AdminDashboardPage() {
                             type="text"
                             value={editTripForm.customCity}
                             onChange={(e) => setEditTripForm({ ...editTripForm, customCity: e.target.value })}
-                            placeholder="Enter destination city (e.g. Doha)"
+                            placeholder="Enter destination city"
                             className="input-field py-2 text-xs w-full mt-1.5"
                             required
                           />
@@ -3137,34 +3859,62 @@ export default function AdminDashboardPage() {
                           <ImageIcon className="w-3.5 h-3.5 text-accent-teal" />
                           <span>Trip Photo</span>
                         </label>
+                        <p className="text-[10px] text-surface-500">
+                          Changing city keeps this photo. Empty save does not wipe an existing upload.
+                        </p>
                         <div className="flex items-center gap-2.5">
-                          <div className="relative w-11 h-11 rounded-lg bg-surface-800 border border-surface-700 flex items-center justify-center shrink-0 overflow-hidden shadow-inner">
+                          <div className="relative w-20 h-20 rounded-xl bg-surface-800 border border-surface-700 flex items-center justify-center shrink-0 overflow-hidden shadow-inner group">
                             {editTripForm.photoUrl ? (
-                              <img
-                                src={editTripForm.photoUrl}
-                                alt="Trip photo"
-                                className="w-full h-full object-cover"
-                                onError={(e) => {
-                                  (e.target as HTMLElement).style.display = 'none';
-                                }}
-                              />
+                              <>
+                                <img
+                                  src={editTripForm.photoUrl}
+                                  alt="Trip photo"
+                                  className="w-full h-full object-cover"
+                                  onError={(e) => {
+                                    (e.target as HTMLElement).style.display = 'none';
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (
+                                      isUploadedPhoto(editTripForm.photoUrl) &&
+                                      !window.confirm('Clear this uploaded trip photo from the form? Save will not wipe it unless you confirm here.')
+                                    ) {
+                                      return;
+                                    }
+                                    setEditTripForm({ ...editTripForm, photoUrl: '' });
+                                    setEditTripPhotoCleared(true);
+                                  }}
+                                  className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex items-center justify-center text-red-400 transition-opacity"
+                                  title="Clear photo from form"
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              </>
                             ) : (
-                              <Plane className="w-4 h-4 text-surface-500" />
+                              <Plane className="w-5 h-5 text-surface-500" />
                             )}
                           </div>
                           <input
                             type="text"
                             value={editTripForm.photoUrl}
-                            onChange={(e) => setEditTripForm({ ...editTripForm, photoUrl: e.target.value })}
+                            onChange={(e) => {
+                              setEditTripPhotoCleared(!e.target.value.trim());
+                              setEditTripForm({ ...editTripForm, photoUrl: e.target.value });
+                            }}
                             className="input-field py-2 text-xs flex-1"
-                            placeholder="Image URL (https://...)"
+                            placeholder="Image URL (https://...) or Upload"
                           />
                           <input
                             ref={editTripPhotoFileRef}
                             type="file"
                             accept="image/*"
                             className="hidden"
-                            onChange={handleUploadEditTripPhotoFile}
+                            onChange={(e) => {
+                              setEditTripPhotoCleared(false);
+                              handleUploadEditTripPhotoFile(e);
+                            }}
                           />
                           <button
                             type="button"
@@ -3220,6 +3970,48 @@ export default function AdminDashboardPage() {
                         </button>
                       </div>
                     </form>
+                  </div>
+                </div>
+              )}
+
+              {tripActionPlan && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+                  <div className="glass-card max-w-md w-full p-5 space-y-4 border border-surface-700 shadow-2xl rounded-2xl">
+                    <div>
+                      <h3 className="text-sm font-bold text-white">Remove this trip?</h3>
+                      <p className="text-xs text-surface-300 mt-1.5">
+                        {tripActionPlan.profileName} → {tripActionPlan.city}
+                        {tripActionPlan.country ? `, ${tripActionPlan.country}` : ''}
+                      </p>
+                      <p className="text-[11px] text-surface-400 mt-2">
+                        Hide keeps the photo and dates. Delete forever only removes the trip row — uploaded files stay on disk.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setTripActionPlan(null)}
+                        className="btn-ghost py-2 px-3 text-xs"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleHideTrip(tripActionPlan, true)}
+                        disabled={deletingTripId === tripActionPlan.id}
+                        className="btn-secondary py-2 px-3 text-xs"
+                      >
+                        Hide from Find
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteTrip(tripActionPlan)}
+                        disabled={deletingTripId === tripActionPlan.id}
+                        className="py-2 px-3 text-xs rounded-lg bg-red-500/15 text-red-300 border border-red-500/30 hover:bg-red-500/25"
+                      >
+                        Delete forever
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -3344,7 +4136,7 @@ export default function AdminDashboardPage() {
                   required
                   value={newCampName}
                   onChange={(e) => setNewCampName(e.target.value)}
-                  placeholder="e.g. UK Spring Matchmaking Ad"
+                  placeholder="Enter campaign name"
                   className="input-field text-xs py-2"
                 />
               </div>
@@ -3370,7 +4162,7 @@ export default function AdminDashboardPage() {
                     required
                     value={newCampUtmCampaign}
                     onChange={(e) => setNewCampUtmCampaign(e.target.value)}
-                    placeholder="e.g. uk_spring_2026"
+                    placeholder="e.g. spring_campaign_2026"
                     className="input-field text-xs py-2"
                   />
                 </div>
@@ -3391,6 +4183,89 @@ export default function AdminDashboardPage() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Customer / Lead Inspection Modal */}
+      {inspectingCustomer && (
+        <ProfileViewModal
+          profile={{
+            userId: inspectingCustomer.userId,
+            displayName: inspectingCustomer.displayName || 'Customer',
+            photo: inspectingCustomer.photo || inspectingCustomer.photos?.[0] || inspectingCustomer.avatarUrl,
+            photos: inspectingCustomer.photos || [],
+            city: inspectingCustomer.geoCity || inspectingCustomer.city,
+            country: inspectingCustomer.geoCountry || inspectingCustomer.country,
+            bio: inspectingCustomer.bio || null,
+            adminDetails: {
+              email: inspectingCustomer.email,
+              phone: inspectingCustomer.phone,
+              whatsapp: inspectingCustomer.whatsapp,
+              telegram: inspectingCustomer.telegram,
+              assignedAgent: inspectingCustomer.assignedAgent,
+              leadStage: inspectingCustomer.leadStage,
+              geoCity: inspectingCustomer.geoCity || inspectingCustomer.city,
+              geoCountry: inspectingCustomer.geoCountry || inspectingCustomer.country,
+              attribution: inspectingCustomer.attribution,
+              source: inspectingCustomer.source,
+            },
+          }}
+          onClose={() => setInspectingCustomer(null)}
+        />
+      )}
+
+      {/* Represented Profile & Travel Plans Inspection Modal */}
+      {inspectingProfile && (
+        <ProfileViewModal
+          profile={{
+            userId: inspectingProfile.userId,
+            displayName: inspectingProfile.displayName || 'Represented Profile',
+            isVerified: Boolean(inspectingProfile.isVerified),
+            photo: inspectingProfile.photo || inspectingProfile.photos?.[0] || inspectingProfile.avatarUrl,
+            photos: inspectingProfile.photos || [],
+            bio: inspectingProfile.bio,
+            city: inspectingProfile.city,
+            country: inspectingProfile.country,
+            travelPlans: inspectingProfile.travelPlans || [],
+          }}
+          onClose={() => setInspectingProfile(null)}
+        />
+      )}
+
+      {/* Admin Image Cropper Modal */}
+      {adminCropperFile && adminCropperAction && (
+        <ImageCropperModal
+          isOpen={Boolean(adminCropperFile && adminCropperAction)}
+          file={adminCropperFile}
+          aspectRatio={
+            adminCropperAction === 'profile_create' || adminCropperAction === 'profile_replace'
+              ? 1
+              : 4 / 3
+          }
+          allowedAspectRatios={
+            adminCropperAction === 'trip_create' || adminCropperAction === 'trip_edit'
+              ? [
+                  { label: '4:3 Standard', ratio: 4 / 3 },
+                  { label: '1:1 Square', ratio: 1 },
+                  { label: '16:9 Wide', ratio: 16 / 9 },
+                ]
+              : undefined
+          }
+          cropShape={
+            adminCropperAction === 'profile_create' || adminCropperAction === 'profile_replace'
+              ? 'round'
+              : 'rect'
+          }
+          title={
+            adminCropperAction === 'profile_create' || adminCropperAction === 'profile_replace'
+              ? 'Position Profile Photo'
+              : 'Position Trip Photo'
+          }
+          onCrop={handleAdminCropped}
+          onCancel={() => {
+            setAdminCropperAction(null);
+            setAdminCropperFile(null);
+          }}
+        />
       )}
     </div>
   );

