@@ -87,7 +87,7 @@ export default function MessageChannelModal({
         ? profile.photos[0]
         : profile.photos[0]?.filePath || profile.photos[0]?.url
       : null) ||
-    'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=800&auto=format&fit=crop&q=80';
+    '/api/uploads/profiles/w_blonde_street_eb7cd076-c2de-4c55-ba5f-1c4c23de8b14.jpg';
 
   const handleCityHostDirectClick = () => {
     setOpeningChannel('direct');

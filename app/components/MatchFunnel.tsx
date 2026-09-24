@@ -246,7 +246,7 @@ const FALLBACK_MALE_PREVIEWS: MatchProfile[] = [
     gender: 'male',
     city: 'Berlin',
     country: 'Germany',
-    photo: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=360&h=360&fit=crop&q=80',
+    photo: '/api/uploads/profiles/m_liam_park_2224729f-da2a-4ce6-a70d-3eaec5e8b4e7.jpg',
     travel: {
       city: 'Your City',
       country: '',
@@ -262,7 +262,7 @@ const FALLBACK_MALE_PREVIEWS: MatchProfile[] = [
     gender: 'male',
     city: 'Munich',
     country: 'Germany',
-    photo: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=360&h=360&fit=crop&q=80',
+    photo: '/api/uploads/profiles/m_marcus_bridge_6c55ef13-a447-4950-8488-8dd56653df3b.jpg',
     travel: {
       city: 'Your City',
       country: '',
@@ -310,6 +310,8 @@ export default function MatchFunnel({
   const [ageMax, setAgeMax] = useState(32);
   const [syncIndex, setSyncIndex] = useState(0);
   const [match, setMatch] = useState<MatchProfile | null>(null);
+  const matchRef = useRef<MatchProfile | null>(null);
+  matchRef.current = match;
   const [pool, setPool] = useState<MatchProfile[]>([]);
   /** Profiles already shown this session for the current lookingFor gender (persisted across visits). */
   const [usedIds, setUsedIds] = useState<string[]>([]);
@@ -864,6 +866,28 @@ export default function MatchFunnel({
     } catch {}
     setMatchedHistory(updated);
   };
+
+  // Listen for global go-to-home event (e.g. Header Logo or Discover tab click)
+  useEffect(() => {
+    const handleGoHome = () => {
+      try {
+        if (matchRef.current) {
+          saveToMatchedHistory(matchRef.current);
+        }
+      } catch {}
+      setMatch(null);
+      setPhase('home');
+      setError('');
+      setShowChannelModal(false);
+      setChannelModalProfile(null);
+      setBusy(false);
+      if (typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    };
+    window.addEventListener('cityhost:go-home', handleGoHome);
+    return () => window.removeEventListener('cityhost:go-home', handleGoHome);
+  }, []);
 
   const runMatch = async (listOverride?: MatchProfile[]) => {
     setError('');

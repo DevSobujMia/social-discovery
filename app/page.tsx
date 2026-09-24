@@ -649,6 +649,24 @@ export default function AppHome() {
     }
   };
 
+  const handleGoToHome = useCallback(() => {
+    setActiveChat(null);
+    setSelectedProfile(null);
+    setShowPageChannelModal(false);
+    setPageChannelModalProfile(null);
+    setShowAuthModal(false);
+    setShowVerificationModal(false);
+    setShowTravelPlanModal(false);
+    persistNavTab('discover');
+    persistChatOpen(false);
+    setActiveTab('discover');
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('cityhost:go-home'));
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      window.history.pushState({ tab: 'discover' }, '');
+    }
+  }, []);
+
   const handleSwitchTab = (tab: AppTab) => {
     persistNavTab(tab);
     persistChatOpen(false);
@@ -658,6 +676,12 @@ export default function AppHome() {
     }
     if (tab === 'profile' && !currentUserRef.current && !isExplicitLogout()) {
       void ensureGuestSession();
+    }
+    if (tab === 'discover') {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('cityhost:go-home'));
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
     }
     if (tab === activeTabRef.current) return;
     setActiveTab(tab);
@@ -2804,14 +2828,7 @@ export default function AppHome() {
         <div className="max-w-4xl mx-auto flex items-center justify-between">
           <button
             type="button"
-            onClick={() => {
-              setActiveChat(null);
-              setSelectedProfile(null);
-              handleSwitchTab('discover');
-              if (typeof window !== 'undefined') {
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }
-            }}
+            onClick={handleGoToHome}
             className="flex items-center gap-2 min-w-0 hover:opacity-90 active:scale-95 transition cursor-pointer text-left -ml-1 px-1.5 py-1 rounded-xl group"
             aria-label="City Host - Home"
             title="Go to Home"
@@ -3175,7 +3192,7 @@ export default function AppHome() {
                       const isSelected = activeChat?.id === conv.id;
                       const photo =
                         conv.participant.photo ||
-                        'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=800&auto=format&fit=crop&q=80';
+                        '/api/uploads/profiles/w_blonde_street_eb7cd076-c2de-4c55-ba5f-1c4c23de8b14.jpg';
                       const unread = conv.participant.unreadCount || 0;
                       const hasUnread = unread > 0;
                       const isOnline = isUserOnline(conv.participant.lastActiveAt);
@@ -3278,7 +3295,7 @@ export default function AppHome() {
                             <img
                               src={
                                 activeChat.participant.photo ||
-                                'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=800&auto=format&fit=crop&q=80'
+                                '/api/uploads/profiles/w_blonde_street_eb7cd076-c2de-4c55-ba5f-1c4c23de8b14.jpg'
                               }
                               alt={activeChat.participant.displayName}
                               className="w-10 h-10 rounded-full object-cover ring-2 ring-brand-500/30 shadow-md group-hover:ring-brand-400 transition"
@@ -3390,7 +3407,7 @@ export default function AppHome() {
                           <img
                             src={
                               activeChat.participant.photo ||
-                              'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80'
+                              '/api/uploads/profiles/w_blonde_street_eb7cd076-c2de-4c55-ba5f-1c4c23de8b14.jpg'
                             }
                             alt=""
                             className="w-full h-full object-cover"
@@ -4307,7 +4324,7 @@ export default function AppHome() {
                 <img
                   src={
                     quickMatchTargetProfile.photos?.[0]?.filePath ||
-                    'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=800&auto=format&fit=crop&q=80'
+                    '/api/uploads/profiles/w_blonde_street_eb7cd076-c2de-4c55-ba5f-1c4c23de8b14.jpg'
                   }
                   alt={quickMatchTargetProfile.displayName}
                   className="w-12 h-12 rounded-full object-cover ring-2 ring-brand-500"
