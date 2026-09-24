@@ -119,8 +119,7 @@ function matchReason(
 ): string | null {
   if (!trip) return null;
   const who = displayName || 'She';
-  const city = trip.city || viewerCity || 'the city';
-  return `${who} is traveling soon to ${city}`;
+  return `${who} is a traveler visiting your city`;
 }
 
 // GET /api/profiles — travel-aware discovery
@@ -322,6 +321,9 @@ export async function GET(req: NextRequest) {
       relationshipIntention: p.relationshipIntention,
       isVerified: Boolean(p.isVerified || p.user?.isVerifiedLead),
       hideContactNumber: Boolean(p.user?.hideContactNumber),
+      whatsapp: p.user?.whatsapp || null,
+      telegram: p.user?.telegram || null,
+      phone: p.user?.phone || null,
       contact: (() => {
         const raw =
           p.user?.whatsapp ||

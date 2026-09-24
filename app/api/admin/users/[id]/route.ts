@@ -53,7 +53,8 @@ export async function PATCH(
     const { id } = await params;
     const body = await req.json();
     const { status, displayName, gender, country, city, bio, interests,
-            lookingFor, relationshipIntention, dateOfBirth, isVisible, photoUrl } = body;
+            lookingFor, relationshipIntention, dateOfBirth, isVisible, photoUrl,
+            whatsapp, telegram, phone, isVerifiedLead } = body;
 
     // Agent access check
     if (staff.role === 'agent') {
@@ -63,22 +64,31 @@ export async function PATCH(
       if (!assignment) return notFound('User not found');
     }
 
-    // Update user status (admin only)
-    if (status && staff.role === 'admin') {
+    // Update user record fields
+    const userUpdates: Record<string, unknown> = {};
+    if (status && staff.role === 'admin') userUpdates.status = status;
+    if (whatsapp !== undefined) userUpdates.whatsapp = whatsapp ? String(whatsapp).trim() : null;
+    if (telegram !== undefined) userUpdates.telegram = telegram ? String(telegram).trim().replace(/^@/, '') : null;
+    if (phone !== undefined) userUpdates.phone = phone ? String(phone).trim() : null;
+    if (isVerifiedLead !== undefined) userUpdates.isVerifiedLead = Boolean(isVerifiedLead);
+
+    if (Object.keys(userUpdates).length > 0) {
       await prisma.user.update({
         where: { id },
-        data: { status },
+        data: userUpdates,
       });
 
-      await prisma.auditLog.create({
-        data: {
-          staffId: staff.id,
-          action: `user.${status}`,
-          targetType: 'user',
-          targetId: id,
-          details: { newStatus: status },
-        },
-      });
+      if (status && staff.role === 'admin') {
+        await prisma.auditLog.create({
+          data: {
+            staffId: staff.id,
+            action: `user.${status}`,
+            targetType: 'user',
+            targetId: id,
+            details: { newStatus: status },
+          },
+        });
+      }
     }
 
     // Update profile

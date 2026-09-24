@@ -183,6 +183,12 @@ export default function AdminDashboardPage() {
   const [leadStageFilter, setLeadStageFilter] = useState<'' | 'complete' | 'incomplete'>('');
   const [copiedContact, setCopiedContact] = useState<string | null>(null);
   const [expandedDeviceLeadId, setExpandedDeviceLeadId] = useState<string | null>(null);
+  const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
+  const [deletingUsers, setDeletingUsers] = useState(false);
+  const [userToDelete, setUserToDelete] = useState<any | null>(null);
+  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
+  const [convToDelete, setConvToDelete] = useState<any | null>(null);
+  const [deletingConv, setDeletingConv] = useState(false);
 
   const [travelPlans, setTravelPlans] = useState<any[]>([]);
   const [curatedProfiles, setCuratedProfiles] = useState<any[]>([]);
@@ -212,6 +218,8 @@ export default function AdminDashboardPage() {
   const [editTripForm, setEditTripForm] = useState({
     id: '',
     profileName: '',
+    whatsapp: '',
+    telegram: '',
     country: 'United Arab Emirates',
     customCountry: '',
     city: 'Dubai',
@@ -234,6 +242,8 @@ export default function AdminDashboardPage() {
     city: 'London',
     bio: '',
     interests: 'Travel, Cafes, Photography',
+    whatsapp: '',
+    telegram: '',
     photoUrl: '',
     travelCity: 'Dubai',
     travelNote: 'Traveling soon to Dubai.',
@@ -509,6 +519,61 @@ export default function AdminDashboardPage() {
     }
   };
 
+  const handleDeleteUsers = async (ids: string[]) => {
+    if (!ids.length) return;
+    setDeletingUsers(true);
+    try {
+      const res = await adminFetch('/api/admin/users', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userIds: ids }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast(`Deleted ${ids.length} lead(s) successfully 🗑️`);
+        setSelectedUserIds((prev) => prev.filter((id) => !ids.includes(id)));
+        setUserToDelete(null);
+        setShowBulkDeleteConfirm(false);
+        fetchUsers();
+        fetchAnalytics();
+        fetchMasterInbox();
+      } else {
+        showToast(data.error?.message || 'Failed to delete lead(s)');
+      }
+    } catch {
+      showToast('Network error while deleting leads');
+    } finally {
+      setDeletingUsers(false);
+    }
+  };
+
+  const handleDeleteConversation = async (convId: string) => {
+    if (!convId) return;
+    setDeletingConv(true);
+    try {
+      const res = await adminFetch(`/api/admin/conversations?id=${convId}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('Chat thread deleted 🗑️');
+        setConvToDelete(null);
+        if (selectedChat?.id === convId) {
+          setSelectedChat(null);
+          setChatMessages([]);
+        }
+        fetchMasterInbox();
+        fetchAnalytics();
+      } else {
+        showToast(data.error?.message || 'Failed to delete chat thread');
+      }
+    } catch {
+      showToast('Network error while deleting chat thread');
+    } finally {
+      setDeletingConv(false);
+    }
+  };
+
   const fetchTravelPlans = async () => {
     try {
       const [plansRes, usersRes] = await Promise.all([
@@ -592,6 +657,8 @@ export default function AdminDashboardPage() {
           bio: profileForm.bio,
           interests: profileForm.interests,
           lookingFor: 'travel_partner',
+          whatsapp: profileForm.whatsapp.trim() || undefined,
+          telegram: profileForm.telegram.trim().replace(/^@/, '') || undefined,
           photoUrl: profileForm.photoUrl.trim() || undefined,
           travelCity: profileForm.travelCity,
           travelNote: profileForm.travelNote || `Traveling soon to ${profileForm.travelCity}.`,
@@ -608,6 +675,8 @@ export default function AdminDashboardPage() {
           city: 'London',
           bio: '',
           interests: 'Travel, Cafes, Photography',
+          whatsapp: '',
+          telegram: '',
           photoUrl: '',
           travelCity: 'Dubai',
           travelNote: 'Traveling soon to Dubai.',
@@ -839,6 +908,8 @@ export default function AdminDashboardPage() {
     setEditTripForm({
       id: plan.id,
       profileName: plan.profileName || 'Curated Profile',
+      whatsapp: plan.whatsapp || '',
+      telegram: plan.telegram || '',
       country: isPopularCountry ? plan.country : 'Other',
       customCountry: isPopularCountry ? '' : (plan.country || ''),
       city: isPopularCity ? plan.city : 'Other',
@@ -935,6 +1006,8 @@ export default function AdminDashboardPage() {
         timing: editTripForm.timing,
         note: editTripForm.note.trim() || null,
         isActive: editTripForm.isActive,
+        whatsapp: editTripForm.whatsapp.trim() || null,
+        telegram: editTripForm.telegram.trim().replace(/^@/, '') || null,
       };
 
       if (editTripForm.photoUrl.trim()) {
@@ -1133,9 +1206,19 @@ export default function AdminDashboardPage() {
     return () => clearTimeout(timer);
   }, [userSearch, userStatusFilter, currentStaff]);
 
-  // A lead counts as complete once any one contact channel has been verified.
+  // A lead counts as complete if they sent at least 1 message or provided verified contact channels.
   const isCompleteLead = useCallback(
-    (u: any) => u?.isVerifiedLead === true || u?.leadStage === 'complete',
+    (u: any) =>
+      Boolean(
+        u?.isCompleteLead === true ||
+        u?.isVerifiedLead === true ||
+        (typeof u?.sentMessagesCount === 'number' && u.sentMessagesCount > 0) ||
+        u?.leadStage === 'complete' ||
+        u?.phone ||
+        u?.whatsapp ||
+        u?.telegram ||
+        (Array.isArray(u?.identities) && u.identities.some((i: any) => i.verified || i.value))
+      ),
     []
   );
 
@@ -2165,15 +2248,20 @@ export default function AdminDashboardPage() {
           )}
 
           {/* ============================================================ */}
-          {/* 2. USER MANAGEMENT                                           */}
+          {/* 2. USER MANAGEMENT & LEAD COLLECTION                         */}
           {/* ============================================================ */}
           {activeTab === 'users' && (
             <div className="space-y-4">
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                 <div>
-                  <h2 className="text-xl font-bold text-white">Lead Collection</h2>
+                  <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                    <span>Lead Collection & CRM</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-accent-teal/15 text-accent-teal border border-accent-teal/30 font-medium">
+                      {usersList.length} Total
+                    </span>
+                  </h2>
                   <p className="text-[11px] text-surface-400 mt-0.5">
-                    Every ad visitor lands here — verified contacts are one click away.
+                    Live telemetry, completion classification, device intelligence & direct multichannel contact.
                   </p>
                 </div>
                 <div className="flex items-center gap-2 w-full sm:w-auto">
@@ -2183,7 +2271,7 @@ export default function AdminDashboardPage() {
                       type="text"
                       value={userSearch}
                       onChange={(e) => setUserSearch(e.target.value)}
-                      placeholder="Search name, phone, WhatsApp, Telegram..."
+                      placeholder="Search name, phone, WhatsApp, Telegram, city..."
                       className="input-field text-xs py-1.5 pl-8"
                     />
                   </div>
@@ -2208,36 +2296,63 @@ export default function AdminDashboardPage() {
                 </div>
               </div>
 
-              {/* Lead stage segmented control */}
-              <div className="grid grid-cols-3 p-1 rounded-xl bg-surface-950 border border-surface-800 text-xs font-medium max-w-lg">
-                {([
-                  { key: '', label: 'All Leads', icon: Users },
-                  { key: 'complete', label: 'Complete', icon: BadgeCheck },
-                  { key: 'incomplete', label: 'Incomplete', icon: Clock },
-                ] as const).map(({ key, label, icon: Icon }) => (
-                  <button
-                    key={key || 'all'}
-                    type="button"
-                    onClick={() => setLeadStageFilter(key)}
-                    className={`py-1.5 px-3 rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer ${
-                      leadStageFilter === key
-                        ? 'bg-accent-teal text-surface-950 font-bold shadow-md'
-                        : 'text-surface-400 hover:text-white hover:bg-surface-800/40'
-                    }`}
-                  >
-                    <Icon className="w-3.5 h-3.5" />
-                    <span>{label}</span>
-                    <span
-                      className={`text-[10px] px-1.5 rounded-full font-bold ${
+              {/* Top Controls: Lead stage segmented tabs + Bulk selection floating banner */}
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="grid grid-cols-3 p-1 rounded-xl bg-surface-950 border border-surface-800 text-xs font-medium w-full sm:w-auto max-w-lg">
+                  {([
+                    { key: '', label: 'All Leads', icon: Users },
+                    { key: 'complete', label: 'Complete', icon: BadgeCheck },
+                    { key: 'incomplete', label: 'Incomplete', icon: Clock },
+                  ] as const).map(({ key, label, icon: Icon }) => (
+                    <button
+                      key={key || 'all'}
+                      type="button"
+                      onClick={() => setLeadStageFilter(key)}
+                      className={`py-1.5 px-3 rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer ${
                         leadStageFilter === key
-                          ? 'bg-surface-950/20 text-surface-950'
-                          : 'bg-surface-800 text-surface-300'
+                          ? 'bg-accent-teal text-surface-950 font-bold shadow-md'
+                          : 'text-surface-400 hover:text-white hover:bg-surface-800/40'
                       }`}
                     >
-                      {key === '' ? leadCounts.all : key === 'complete' ? leadCounts.complete : leadCounts.incomplete}
+                      <Icon className="w-3.5 h-3.5" />
+                      <span>{label}</span>
+                      <span
+                        className={`text-[10px] px-1.5 rounded-full font-bold ${
+                          leadStageFilter === key
+                            ? 'bg-surface-950/20 text-surface-950'
+                            : 'bg-surface-800 text-surface-300'
+                        }`}
+                      >
+                        {key === '' ? leadCounts.all : key === 'complete' ? leadCounts.complete : leadCounts.incomplete}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                {selectedUserIds.length > 0 && (
+                  <div className="flex items-center gap-2 p-2 rounded-xl bg-surface-900 border border-surface-700/80 shadow-lg animate-fade-in w-full sm:w-auto justify-between sm:justify-end">
+                    <span className="text-xs font-bold text-white px-2 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-accent-teal animate-pulse" />
+                      <span>{selectedUserIds.length} selected</span>
                     </span>
-                  </button>
-                ))}
+                    <button
+                      type="button"
+                      onClick={() => setSelectedUserIds([])}
+                      className="text-[11px] text-surface-400 hover:text-white px-2 py-1 rounded cursor-pointer"
+                    >
+                      Deselect
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowBulkDeleteConfirm(true)}
+                      disabled={deletingUsers}
+                      className="px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-sm"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete ({selectedUserIds.length})</span>
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Users Table */}
@@ -2246,12 +2361,28 @@ export default function AdminDashboardPage() {
                   <table className="w-full text-left text-xs text-surface-300">
                     <thead className="bg-surface-900 text-[11px] uppercase text-surface-400 border-b border-surface-800">
                       <tr>
-                        <th className="p-3">Lead</th>
-                        <th className="p-3">Requirements</th>
-                        <th className="p-3">Verification</th>
+                        <th className="p-3 w-10 text-center">
+                          <input
+                            type="checkbox"
+                            aria-label="Select all leads"
+                            checked={visibleLeads.length > 0 && selectedUserIds.length >= visibleLeads.length}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedUserIds(Array.from(new Set([...selectedUserIds, ...visibleLeads.map((u) => u.id)])));
+                              } else {
+                                const visibleSet = new Set(visibleLeads.map((u) => u.id));
+                                setSelectedUserIds(selectedUserIds.filter((id) => !visibleSet.has(id)));
+                              }
+                            }}
+                            className="rounded border-surface-700 bg-surface-800 text-accent-teal focus:ring-accent-teal cursor-pointer"
+                          />
+                        </th>
+                        <th className="p-3">Lead & Profile</th>
+                        <th className="p-3">Lead Stage</th>
+                        <th className="p-3">Market Price</th>
                         <th className="p-3">Direct Contact</th>
-                        <th className="p-3">Device</th>
-                        <th className="p-3">Source</th>
+                        <th className="p-3">Device & Specs</th>
+                        <th className="p-3">Campaign / Geo</th>
                         <th className="p-3">Status</th>
                         <th className="p-3 text-right">Actions</th>
                       </tr>
@@ -2259,95 +2390,123 @@ export default function AdminDashboardPage() {
                     <tbody className="divide-y divide-surface-800/60">
                       {visibleLeads.map((u) => {
                         const photo = u.photo || u.profile?.photos?.[0]?.filePath;
-                        const displayName = u.displayName || u.profile?.displayName || 'Anonymous Lead';
-                        const country = u.country || u.profile?.country || '—';
+                        const displayName = u.displayName || u.profile?.displayName || 'Visitor Lead';
+                        const country = u.country || u.profile?.country || u.geoCountry || '—';
                         const gender = u.gender || u.profile?.gender || '—';
-                        const lookingFor =
-                          u.requirements?.preferredGender ||
-                          u.lookingFor ||
-                          u.profile?.lookingFor;
                         const complete = isCompleteLead(u);
+                        const isSelected = selectedUserIds.includes(u.id);
                         const device = u.device;
                         const deviceOpen = expandedDeviceLeadId === u.id;
-                        const DeviceIcon =
-                          device?.fields?.find((f: { key: string }) => f.key === 'Device')?.value ===
-                          'desktop'
-                            ? Monitor
-                            : device?.fields?.find((f: { key: string }) => f.key === 'Device')
-                                  ?.value === 'tablet'
-                              ? Tablet
-                              : Smartphone;
+                        const osName = (u.deviceMeta as any)?.os || device?.fields?.find((f: any) => f.key === 'OS')?.value || '';
+                        const browserName = (u.deviceMeta as any)?.browser || device?.fields?.find((f: any) => f.key === 'Browser')?.value || '';
+                        const screenRes = (u.deviceMeta as any)?.screen || device?.fields?.find((f: any) => f.key === 'Screen')?.value || '';
+                        const isPwa = (u.deviceMeta as any)?.isStandalone;
+                        const inApp = (u.deviceMeta as any)?.inAppBrowser || ((u.deviceMeta as any)?.isInAppBrowser ? 'In-App' : null);
+
+                        const isIos = osName.toLowerCase().includes('ios') || osName.toLowerCase().includes('iphone');
+                        const isAndroid = osName.toLowerCase().includes('android');
+                        const isDesktop = osName.toLowerCase().includes('windows') || osName.toLowerCase().includes('mac') || osName.toLowerCase().includes('linux');
+
+                        const DeviceIcon = isDesktop ? Monitor : (isIos || isAndroid ? Smartphone : Tablet);
+
                         const channels = ([
                           { channel: 'phone' as const, value: u.phone, label: 'Call', Icon: Phone, tone: 'text-sky-300 border-sky-500/30 hover:bg-sky-500/10' },
                           { channel: 'whatsapp' as const, value: u.whatsapp, label: 'WhatsApp', Icon: MessageCircle, tone: 'text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/10' },
                           { channel: 'telegram' as const, value: u.telegram, label: 'Telegram', Icon: Send, tone: 'text-cyan-300 border-cyan-500/30 hover:bg-cyan-500/10' },
                         ]).filter((c) => typeof c.value === 'string' && c.value.trim().length > 0);
 
+                        const valuation = u.marketValuation || {
+                          range: complete ? '$30 - $45' : '$12 - $18',
+                          tierName: 'Tier 1 GCC',
+                        };
+
                         return (
                           <React.Fragment key={u.id}>
-                          <tr className="hover:bg-surface-800/40 transition">
+                          <tr className={`hover:bg-surface-800/40 transition ${isSelected ? 'bg-surface-800/30' : ''}`}>
+                            {/* Checkbox */}
+                            <td className="p-3 text-center">
+                              <input
+                                type="checkbox"
+                                aria-label={`Select lead ${displayName}`}
+                                checked={isSelected}
+                                onChange={(e) => {
+                                  if (e.target.checked) setSelectedUserIds([...selectedUserIds, u.id]);
+                                  else setSelectedUserIds(selectedUserIds.filter((id) => id !== u.id));
+                                }}
+                                className="rounded border-surface-700 bg-surface-800 text-accent-teal focus:ring-accent-teal cursor-pointer"
+                              />
+                            </td>
+
+                            {/* Lead Info */}
                             <td className="p-3">
                               <div className="flex items-center gap-2.5">
-                                <div className="w-8 h-8 rounded-full overflow-hidden bg-surface-700 shrink-0">
+                                <div className="w-8 h-8 rounded-full overflow-hidden bg-surface-700 shrink-0 ring-1 ring-surface-600">
                                   {photo ? (
                                     <img src={photo} alt="" className="w-full h-full object-cover" />
                                   ) : (
-                                    <div className="w-full h-full flex items-center justify-center font-bold text-white">
+                                    <div className="w-full h-full flex items-center justify-center font-bold text-white bg-gradient-to-tr from-brand-600 to-indigo-600">
                                       {displayName?.[0] || 'U'}
                                     </div>
                                   )}
                                 </div>
-                                <div>
-                                  <p className="font-bold text-white flex items-center gap-1.5">
-                                    {displayName}
+                                <div className="min-w-0">
+                                  <p className="font-bold text-white flex items-center gap-1.5 truncate">
+                                    <span className="truncate max-w-[130px]">{displayName}</span>
                                     {u.age ? (
                                       <span className="inline-flex items-center gap-0.5 text-[10px] font-medium text-surface-400">
-                                        <Cake className="w-3 h-3" />
+                                        <Cake className="w-2.5 h-2.5" />
                                         {u.age}
                                       </span>
                                     ) : null}
                                   </p>
-                                  <p className="text-[10px] text-surface-400">
-                                    {u.email || u.phone || u.whatsapp || u.telegram || 'No contact yet'}
+                                  <p className="text-[10px] text-surface-400 font-mono truncate max-w-[150px]">
+                                    {u.email || u.phone || u.whatsapp || u.telegram || `ID: #${u.id.slice(0, 8)}`}
                                   </p>
                                 </div>
                               </div>
                             </td>
 
+                            {/* Lead Stage Classification */}
                             <td className="p-3">
-                              <span className="badge-brand text-[10px] capitalize">
-                                {typeof lookingFor === 'string'
-                                  ? lookingFor.replace(/_/g, ' ')
-                                  : 'Not specified'}
+                              {complete ? (
+                                <div>
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                                    <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                                    <span>Complete Lead</span>
+                                  </span>
+                                  <p className="text-[10px] text-surface-400 mt-0.5">
+                                    {u.sentMessagesCount > 0
+                                      ? `Sent ${u.sentMessagesCount} msg${u.sentMessagesCount > 1 ? 's' : ''}`
+                                      : 'Verified contact'}
+                                  </p>
+                                </div>
+                              ) : (
+                                <div>
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                    <Clock className="w-3 h-3 text-amber-400" />
+                                    <span>Incomplete</span>
+                                  </span>
+                                  <p className="text-[10px] text-surface-400 mt-0.5">
+                                    Funnel visitor · No msg
+                                  </p>
+                                </div>
+                              )}
+                            </td>
+
+                            {/* Market Price Valuation */}
+                            <td className="p-3">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-extrabold bg-gradient-to-r from-emerald-500/20 to-teal-500/20 text-emerald-300 border border-emerald-500/30 shadow-sm">
+                                💰 {valuation.range}
                               </span>
-                              <p className="text-[10px] text-surface-400 mt-1 capitalize">
-                                {gender} · {country}
-                                {u.requirements?.travelDestination
-                                  ? ` · ${u.requirements.travelDestination}`
-                                  : ''}
+                              <p className="text-[10px] text-surface-400 mt-0.5 truncate max-w-[120px]" title={valuation.notes || valuation.tierName}>
+                                {valuation.tierName}
                               </p>
                             </td>
 
-                            <td className="p-3">
-                              {complete ? (
-                                <span className="badge-teal text-[10px] font-bold">
-                                  <ShieldCheck className="w-3 h-3 mr-1" />
-                                  Complete
-                                </span>
-                              ) : (
-                                <span className="badge-amber text-[10px] font-bold">
-                                  <Clock className="w-3 h-3 mr-1" />
-                                  Incomplete
-                                </span>
-                              )}
-                              {u.verifiedVia ? (
-                                <p className="text-[10px] text-surface-400 mt-1 capitalize">via {u.verifiedVia}</p>
-                              ) : null}
-                            </td>
-
+                            {/* Direct Contact Channels */}
                             <td className="p-3">
                               {channels.length === 0 ? (
-                                <span className="text-[10px] text-surface-500 italic">Awaiting verification</span>
+                                <span className="text-[10px] text-surface-500 italic">No contact yet</span>
                               ) : (
                                 <div className="flex flex-wrap items-center gap-1.5">
                                   {channels.map(({ channel, value, label, Icon, tone }) => (
@@ -2357,10 +2516,10 @@ export default function AdminDashboardPage() {
                                         target="_blank"
                                         rel="noopener noreferrer"
                                         title={`${label}: ${value}`}
-                                        className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium border rounded-l-lg transition cursor-pointer ${tone}`}
+                                        className={`inline-flex items-center gap-1 px-2 py-1 text-[10px] font-semibold border rounded-l-lg transition cursor-pointer ${tone}`}
                                       >
                                         <Icon className="w-3 h-3" />
-                                        <span className="hidden lg:inline">{label}</span>
+                                        <span className="hidden xl:inline">{label}</span>
                                       </a>
                                       <button
                                         type="button"
@@ -2370,7 +2529,7 @@ export default function AdminDashboardPage() {
                                         className={`inline-flex items-center px-1.5 py-1 border border-l-0 rounded-r-lg transition cursor-pointer ${tone}`}
                                       >
                                         {copiedContact === value ? (
-                                          <Check className="w-3 h-3" />
+                                          <Check className="w-3 h-3 text-emerald-400" />
                                         ) : (
                                           <Copy className="w-3 h-3" />
                                         )}
@@ -2381,58 +2540,63 @@ export default function AdminDashboardPage() {
                               )}
                             </td>
 
+                            {/* Device & Tech Telemetry */}
                             <td className="p-3">
                               <button
                                 type="button"
                                 onClick={() =>
                                   setExpandedDeviceLeadId((id) => (id === u.id ? null : u.id))
                                 }
-                                className="text-left max-w-[200px] group cursor-pointer"
-                                title={device?.qualityNote || 'Device details'}
+                                className="text-left group cursor-pointer"
+                                title="Click to view full device & telemetry specs"
                               >
-                                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-white">
-                                  <DeviceIcon className="w-3.5 h-3.5 text-surface-400 group-hover:text-brand-300" />
-                                  <span className="truncate">{device?.label || 'Unknown device'}</span>
-                                </span>
-                                <p className="text-[10px] text-surface-400 mt-0.5 truncate">
-                                  {device?.detail || 'Tap for details'}
-                                </p>
-                                {device?.quality && device.quality !== 'unknown' ? (
-                                  <span
-                                    className={`mt-1 inline-flex text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${
-                                      device.quality === 'strong'
-                                        ? 'bg-emerald-500/15 text-emerald-300'
-                                        : device.quality === 'weak'
-                                          ? 'bg-amber-500/15 text-amber-300'
-                                          : 'bg-surface-800 text-surface-400'
-                                    }`}
-                                  >
-                                    {device.quality === 'strong'
-                                      ? 'Good signal'
-                                      : device.quality === 'weak'
-                                        ? 'In-app / caution'
-                                        : 'Neutral'}
+                                <div className="flex items-center gap-1.5">
+                                  <DeviceIcon className="w-3.5 h-3.5 text-surface-400 group-hover:text-accent-teal transition" />
+                                  <span className="text-[11px] font-semibold text-white group-hover:text-accent-teal transition truncate max-w-[120px]">
+                                    {osName ? `${osName}${browserName ? ` · ${browserName}` : ''}` : (device?.label || 'Device')}
                                   </span>
-                                ) : null}
+                                </div>
+                                <div className="flex items-center gap-1.5 mt-0.5">
+                                  {screenRes ? (
+                                    <span className="text-[10px] text-surface-400 font-mono">{screenRes}</span>
+                                  ) : null}
+                                  {isPwa ? (
+                                    <span className="text-[9px] px-1 py-0.2 rounded bg-indigo-500/20 text-indigo-300 font-bold border border-indigo-500/30">
+                                      PWA
+                                    </span>
+                                  ) : null}
+                                  {inApp ? (
+                                    <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30 truncate max-w-[70px]">
+                                      {inApp}
+                                    </span>
+                                  ) : null}
+                                </div>
                               </button>
                             </td>
 
+                            {/* Campaign / Source */}
                             <td className="p-3">
                               {u.source?.utm_campaign ? (
-                                <>
-                                  <span className="badge text-[10px] bg-brand-500/15 text-brand-300 font-medium">
-                                    <Megaphone className="w-3 h-3 mr-1" />
+                                <div>
+                                  <span className="badge text-[10px] bg-brand-500/15 text-brand-300 font-semibold truncate max-w-[120px] block" title={u.source.utm_campaign}>
+                                    <Megaphone className="w-2.5 h-2.5 mr-1 inline" />
                                     {u.source.utm_campaign}
                                   </span>
-                                  {u.source.utm_source ? (
-                                    <p className="text-[10px] text-surface-400 mt-1 capitalize">{u.source.utm_source}</p>
-                                  ) : null}
-                                </>
+                                  <p className="text-[10px] text-surface-400 mt-0.5">
+                                    {[u.geoCity, u.geoCountry].filter(Boolean).join(', ') || u.source.utm_source || 'Paid Ad'}
+                                  </p>
+                                </div>
                               ) : (
-                                <span className="text-[10px] text-surface-500 italic">Direct</span>
+                                <div>
+                                  <span className="text-[10px] text-surface-400 font-medium">Direct Traffic</span>
+                                  <p className="text-[10px] text-surface-500 mt-0.5">
+                                    {[u.geoCity, u.geoCountry].filter(Boolean).join(', ') || 'Global'}
+                                  </p>
+                                </div>
                               )}
                             </td>
 
+                            {/* Status */}
                             <td className="p-3">
                               <span
                                 className={`badge text-[10px] font-bold ${
@@ -2445,51 +2609,79 @@ export default function AdminDashboardPage() {
                               </span>
                             </td>
 
+                            {/* Actions */}
                             <td className="p-3 text-right">
                               <div className="flex items-center justify-end gap-1.5">
                                 <button
+                                  type="button"
+                                  onClick={() => {
+                                    setActiveTab('inbox');
+                                    fetchMasterInbox();
+                                  }}
+                                  className="p-1.5 rounded-lg text-surface-400 hover:text-accent-teal hover:bg-surface-800 transition cursor-pointer"
+                                  title="Open chat in Master Inbox"
+                                >
+                                  <MessageSquare className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
                                   onClick={() => handleToggleUserStatus(u.id, u.status)}
-                                  className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition ${
+                                  className={`px-2 py-1 rounded-lg text-[10px] font-medium transition cursor-pointer ${
                                     u.status === 'active'
-                                      ? 'text-red-400 hover:bg-red-500/10 border border-red-500/30'
+                                      ? 'text-surface-400 hover:text-amber-400 hover:bg-amber-500/10 border border-surface-700'
                                       : 'text-accent-teal hover:bg-teal-500/10 border border-accent-teal/30'
                                   }`}
+                                  title={u.status === 'active' ? 'Suspend lead' : 'Activate lead'}
                                 >
                                   {u.status === 'active' ? 'Suspend' : 'Activate'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setUserToDelete(u)}
+                                  className="p-1.5 rounded-lg text-surface-400 hover:text-red-400 hover:bg-red-500/10 transition cursor-pointer"
+                                  title="Delete lead permanently"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
                                 </button>
                               </div>
                             </td>
                           </tr>
+
+                          {/* Expanded Full Device Specs Drawer */}
                           {deviceOpen ? (
-                            <tr className="bg-surface-950/80">
-                              <td colSpan={8} className="px-4 py-3">
-                                <div className="rounded-xl border border-surface-800 bg-surface-900/60 p-3">
-                                  <div className="flex items-start justify-between gap-3 mb-2">
+                            <tr className="bg-surface-950/90">
+                              <td colSpan={9} className="px-4 py-3 border-t border-b border-surface-800">
+                                <div className="rounded-xl border border-surface-800 bg-surface-900/80 p-3.5 space-y-3">
+                                  <div className="flex items-start justify-between gap-3 border-b border-surface-800 pb-2">
                                     <div>
-                                      <p className="text-xs font-bold text-white">Device & quality</p>
+                                      <p className="text-xs font-bold text-white flex items-center gap-1.5">
+                                        <DeviceIcon className="w-4 h-4 text-accent-teal" />
+                                        <span>Device Telemetry & Specs — {displayName}</span>
+                                      </p>
                                       <p className="text-[11px] text-surface-400 mt-0.5">
-                                        {device?.qualityNote || 'No quality note'}
+                                        {device?.qualityNote || 'Accurate hardware and network client telemetry'}
                                       </p>
                                     </div>
                                     <button
                                       type="button"
                                       onClick={() => setExpandedDeviceLeadId(null)}
-                                      className="text-[11px] text-surface-400 hover:text-white cursor-pointer"
+                                      className="text-xs text-surface-400 hover:text-white px-2 py-0.5 rounded hover:bg-surface-800 transition cursor-pointer"
                                     >
-                                      Close
+                                      Close Specs ✕
                                     </button>
                                   </div>
-                                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+
+                                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
                                     {(device?.fields || []).map(
                                       (f: { key: string; value: string }) => (
                                         <div
                                           key={f.key}
-                                          className="rounded-lg bg-surface-950/70 border border-surface-800 px-2.5 py-2"
+                                          className="rounded-lg bg-surface-950/80 border border-surface-800/80 px-3 py-2"
                                         >
-                                          <p className="text-[9px] uppercase tracking-wide text-surface-500">
+                                          <p className="text-[9px] uppercase tracking-wider text-surface-500 font-semibold">
                                             {f.key}
                                           </p>
-                                          <p className="text-[11px] text-surface-200 mt-0.5 break-all">
+                                          <p className="text-xs text-surface-200 mt-0.5 font-mono break-all">
                                             {f.value}
                                           </p>
                                         </div>
@@ -2497,17 +2689,16 @@ export default function AdminDashboardPage() {
                                     )}
                                     {(!device?.fields || device.fields.length === 0) && (
                                       <p className="text-[11px] text-surface-500 col-span-full">
-                                        Device snapshot will appear after the visitor opens chat or returns.
+                                        Device snapshot will refresh on next customer interaction.
                                       </p>
                                     )}
                                   </div>
-                                  {u.geoCity || u.geoCountry || u.language ? (
-                                    <p className="text-[10px] text-surface-500 mt-2">
-                                      Edge geo: {[u.geoCity, u.geoCountry].filter(Boolean).join(', ') || '—'}
-                                      {u.language ? ` · lang ${u.language}` : ''}
-                                      {typeof u.leadScore === 'number' ? ` · score ${u.leadScore}` : ''}
-                                    </p>
-                                  ) : null}
+
+                                  <div className="flex flex-wrap items-center justify-between text-[11px] text-surface-400 pt-1 border-t border-surface-800/60">
+                                    <span>Geo IP: {[u.geoCity, u.geoCountry].filter(Boolean).join(', ') || 'Pending'}</span>
+                                    <span>Lead Score: <strong className="text-accent-teal">{u.leadScore || 0}/100</strong></span>
+                                    <span>Valuation: <strong className="text-emerald-400">{valuation.range} ({valuation.tierName})</strong></span>
+                                  </div>
                                 </div>
                               </td>
                             </tr>
@@ -2518,15 +2709,15 @@ export default function AdminDashboardPage() {
 
                       {!loadingUsers && visibleLeads.length === 0 && (
                         <tr>
-                          <td colSpan={8} className="p-10 text-center">
+                          <td colSpan={9} className="p-10 text-center">
                             <UserCheck className="w-8 h-8 mx-auto text-surface-600 mb-2" />
-                            <p className="text-surface-300 font-medium">No leads in this view</p>
+                            <p className="text-surface-300 font-medium">No leads in this filter</p>
                             <p className="text-[11px] text-surface-500 mt-1">
                               {leadStageFilter === 'complete'
-                                ? 'Nobody has verified a contact yet.'
+                                ? 'No complete leads found yet.'
                                 : leadStageFilter === 'incomplete'
-                                  ? 'Every lead here has verified their contact.'
-                                  : 'Leads appear the moment an ad visitor starts a chat.'}
+                                  ? 'No incomplete leads found.'
+                                  : 'Leads appear immediately when an ad visitor starts a chat or explores.'}
                             </p>
                           </td>
                         </tr>
@@ -2678,106 +2869,119 @@ export default function AdminDashboardPage() {
                       const hasUnread = unread > 0;
 
                       return (
-                        <button
-                          key={c.id}
-                          onClick={() => handleSelectConversation(c)}
-                          className={`w-full text-left px-3 py-3 flex items-center gap-3 transition-colors cursor-pointer ${
-                            isSelected
-                              ? 'bg-surface-800/90'
-                              : hasUnread
-                                ? 'bg-surface-900/80 hover:bg-surface-800/80 border-l-2 border-l-rose-500'
-                                : 'hover:bg-surface-800/40'
-                          }`}
-                        >
-                          {/* Customer Avatar */}
-                          <div className="relative shrink-0">
-                            <div className="w-10 h-10 rounded-full ring-2 ring-surface-800 overflow-hidden bg-emerald-700/30 text-emerald-300 font-bold flex items-center justify-center text-xs shadow-sm">
-                              {c.customer?.photo || c.customer?.photos?.[0] || c.customer?.avatarUrl ? (
-                                <img
-                                  src={c.customer.photo || c.customer?.photos?.[0] || c.customer.avatarUrl}
-                                  alt={customerName}
-                                  className="w-full h-full object-cover"
+                        <div key={c.id} className="relative group/conv">
+                          <button
+                            onClick={() => handleSelectConversation(c)}
+                            className={`w-full text-left px-3 py-3 pr-8 flex items-center gap-3 transition-colors cursor-pointer ${
+                              isSelected
+                                ? 'bg-surface-800/90'
+                                : hasUnread
+                                  ? 'bg-surface-900/80 hover:bg-surface-800/80 border-l-2 border-l-rose-500'
+                                  : 'hover:bg-surface-800/40'
+                            }`}
+                          >
+                            {/* Customer Avatar */}
+                            <div className="relative shrink-0">
+                              <div className="w-10 h-10 rounded-full ring-2 ring-surface-800 overflow-hidden bg-emerald-700/30 text-emerald-300 font-bold flex items-center justify-center text-xs shadow-sm">
+                                {c.customer?.photo || c.customer?.photos?.[0] || c.customer?.avatarUrl ? (
+                                  <img
+                                    src={c.customer.photo || c.customer?.photos?.[0] || c.customer.avatarUrl}
+                                    alt={customerName}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  customerName.charAt(0).toUpperCase()
+                                )}
+                              </div>
+                              {isUserOnline(c.customer?.lastActiveAt) && (
+                                <span
+                                  className="absolute bottom-0 right-0 w-3 h-3 bg-accent-teal border-2 border-surface-900 rounded-full shadow-sm"
+                                  title="Online now"
                                 />
-                              ) : (
-                                customerName.charAt(0).toUpperCase()
                               )}
                             </div>
-                            {isUserOnline(c.customer?.lastActiveAt) && (
-                              <span
-                                className="absolute bottom-0 right-0 w-3 h-3 bg-accent-teal border-2 border-surface-900 rounded-full shadow-sm"
-                                title="Online now"
-                              />
-                            )}
-                          </div>
 
-                          <div className="flex-1 min-w-0 border-b border-surface-800/50 pb-3 -mb-3">
-                            <div className="flex items-baseline justify-between gap-2">
-                              <span
-                                className={`text-[13px] truncate flex items-center gap-1.5 ${
-                                  hasUnread ? 'font-bold text-white' : 'font-semibold text-surface-100'
-                                }`}
-                              >
-                                <span className="text-white truncate max-w-[85px]">{customerName}</span>
-                                <span className="text-surface-500 font-normal text-xs shrink-0">to</span>
-                                <span className="inline-flex items-center gap-1 min-w-0">
-                                  <span className="w-4 h-4 rounded-full ring-1 ring-surface-700 overflow-hidden bg-brand-500/20 text-pink-300 font-semibold flex items-center justify-center text-[8px] shrink-0">
-                                    {c.representedProfile?.photo || c.representedProfile?.photos?.[0] || c.representedProfile?.avatarUrl ? (
-                                      <img
-                                        src={c.representedProfile.photo || c.representedProfile?.photos?.[0] || c.representedProfile.avatarUrl}
-                                        alt={profileName}
-                                        className="w-full h-full object-cover"
-                                      />
-                                    ) : (
-                                      profileName.charAt(0).toUpperCase()
-                                    )}
-                                  </span>
-                                  <span className="text-accent-teal truncate max-w-[85px] font-medium">{profileName}</span>
-                                </span>
-                              </span>
-                              <span
-                                className={`text-[11px] shrink-0 tabular-nums ${
-                                  hasUnread ? 'text-rose-400 font-bold' : 'text-surface-500'
-                                }`}
-                              >
-                                {chatListTime(c.lastMessageAt || c.updatedAt)}
-                              </span>
-                            </div>
-                            <div className="flex items-center justify-between gap-1.5 mt-0.5 min-w-0">
-                              <div className="flex items-center gap-1.5 min-w-0 flex-1 truncate">
-                                {leadCityOf(c) ? (
-                                  <span className="inline-flex items-center gap-0.5 shrink-0 text-[10px] font-semibold text-accent-teal">
-                                    <MapPin className="w-3 h-3" />
-                                    {leadCityOf(c)}
-                                  </span>
-                                ) : null}
-                                {leadAdOf(c) ? (
-                                  <span
-                                    className="inline-flex items-center gap-0.5 shrink-0 max-w-[110px] truncate text-[10px] font-medium text-brand-300"
-                                    title={leadAdOf(c)}
-                                  >
-                                    <Megaphone className="w-3 h-3 shrink-0" />
-                                    <span className="truncate">{leadAdOf(c)}</span>
-                                  </span>
-                                ) : (
-                                  <span className="text-[10px] text-surface-500 shrink-0">Direct</span>
-                                )}
-                                <span className="text-surface-600 text-[10px] shrink-0">·</span>
-                                <p
-                                  className={`text-[12px] truncate ${
-                                    hasUnread ? 'text-white font-medium' : 'text-surface-500'
+                            <div className="flex-1 min-w-0 border-b border-surface-800/50 pb-3 -mb-3">
+                              <div className="flex items-baseline justify-between gap-2">
+                                <span
+                                  className={`text-[13px] truncate flex items-center gap-1.5 ${
+                                    hasUnread ? 'font-bold text-white' : 'font-semibold text-surface-100'
                                   }`}
                                 >
-                                  {c.lastMessagePreview || 'New conversation'}
-                                </p>
-                              </div>
-                              {hasUnread && (
-                                <span className="min-w-[18px] h-4.5 px-1.5 flex items-center justify-center rounded-full bg-rose-600 text-white text-[10px] font-extrabold shrink-0 shadow-md shadow-rose-600/40">
-                                  {unread > 99 ? '99+' : unread}
+                                  <span className="text-white truncate max-w-[85px]">{customerName}</span>
+                                  <span className="text-surface-500 font-normal text-xs shrink-0">to</span>
+                                  <span className="inline-flex items-center gap-1 min-w-0">
+                                    <span className="w-4 h-4 rounded-full ring-1 ring-surface-700 overflow-hidden bg-brand-500/20 text-pink-300 font-semibold flex items-center justify-center text-[8px] shrink-0">
+                                      {c.representedProfile?.photo || c.representedProfile?.photos?.[0] || c.representedProfile?.avatarUrl ? (
+                                        <img
+                                          src={c.representedProfile.photo || c.representedProfile?.photos?.[0] || c.representedProfile.avatarUrl}
+                                          alt={profileName}
+                                          className="w-full h-full object-cover"
+                                        />
+                                      ) : (
+                                        profileName.charAt(0).toUpperCase()
+                                      )}
+                                    </span>
+                                    <span className="text-accent-teal truncate max-w-[85px] font-medium">{profileName}</span>
+                                  </span>
                                 </span>
-                              )}
+                                <span
+                                  className={`text-[11px] shrink-0 tabular-nums ${
+                                    hasUnread ? 'text-rose-400 font-bold' : 'text-surface-500'
+                                  }`}
+                                >
+                                  {chatListTime(c.lastMessageAt || c.updatedAt)}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between gap-1.5 mt-0.5 min-w-0">
+                                <div className="flex items-center gap-1.5 min-w-0 flex-1 truncate">
+                                  {leadCityOf(c) ? (
+                                    <span className="inline-flex items-center gap-0.5 shrink-0 text-[10px] font-semibold text-accent-teal">
+                                      <MapPin className="w-3 h-3" />
+                                      {leadCityOf(c)}
+                                    </span>
+                                  ) : null}
+                                  {leadAdOf(c) ? (
+                                    <span
+                                      className="inline-flex items-center gap-0.5 shrink-0 max-w-[110px] truncate text-[10px] font-medium text-brand-300"
+                                      title={leadAdOf(c)}
+                                    >
+                                      <Megaphone className="w-3 h-3 shrink-0" />
+                                      <span className="truncate">{leadAdOf(c)}</span>
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] text-surface-500 shrink-0">Direct</span>
+                                  )}
+                                  <span className="text-surface-600 text-[10px] shrink-0">·</span>
+                                  <p
+                                    className={`text-[12px] truncate ${
+                                      hasUnread ? 'text-white font-medium' : 'text-surface-500'
+                                    }`}
+                                  >
+                                    {c.lastMessagePreview || 'New conversation'}
+                                  </p>
+                                </div>
+                                {hasUnread && (
+                                  <span className="min-w-[18px] h-4.5 px-1.5 flex items-center justify-center rounded-full bg-rose-600 text-white text-[10px] font-extrabold shrink-0 shadow-md shadow-rose-600/40">
+                                    {unread > 99 ? '99+' : unread}
+                                  </span>
+                                )}
+                              </div>
                             </div>
-                          </div>
-                        </button>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setConvToDelete(c);
+                            }}
+                            className="absolute right-1.5 top-2.5 p-1.5 rounded-lg text-surface-500 hover:text-red-400 hover:bg-red-500/15 opacity-0 group-hover/conv:opacity-100 transition cursor-pointer"
+                            title="Delete this conversation thread"
+                            aria-label="Delete chat thread"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       );
                     })
                   )}
@@ -2908,7 +3112,17 @@ export default function AdminDashboardPage() {
                           title="Send a safety verification popup to customer to confirm they are human and get their phone number"
                         >
                           <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
-                          <span>{requestingVerification ? 'Sending...' : 'Ask Human Verification'}</span>
+                          <span className="hidden sm:inline">{requestingVerification ? 'Sending...' : 'Ask Verification'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConvToDelete(selectedChat)}
+                          disabled={deletingConv}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/30 text-xs font-semibold transition cursor-pointer disabled:opacity-50"
+                          title="Delete this conversation thread"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                          <span className="hidden md:inline">Delete Thread</span>
                         </button>
                       </div>
                     </div>
@@ -3260,6 +3474,42 @@ export default function AdminDashboardPage() {
                     placeholder="Travel, Cafes, Photography"
                   />
                 </div>
+
+                {/* Profile Direct WhatsApp & Telegram (Optional) */}
+                <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 rounded-xl bg-surface-950/60 border border-surface-800">
+                  <div className="sm:col-span-2">
+                    <p className="text-[11px] font-bold text-white flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-accent-teal" />
+                      <span>Custom WhatsApp & Telegram (Optional)</span>
+                    </p>
+                    <p className="text-[10px] text-surface-400 mt-0.5">
+                      Set unique direct WhatsApp/Telegram for this profile. If left blank, it automatically uses the global fallback account.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="input-label flex items-center gap-1">
+                      <span className="text-emerald-400 font-bold">WhatsApp:</span>
+                    </label>
+                    <input
+                      value={profileForm.whatsapp}
+                      onChange={(e) => setProfileForm({ ...profileForm, whatsapp: e.target.value })}
+                      className="input-field py-2 text-xs"
+                      placeholder="e.g. +49 1521 0635575"
+                    />
+                  </div>
+                  <div>
+                    <label className="input-label flex items-center gap-1">
+                      <span className="text-sky-400 font-bold">Telegram:</span>
+                    </label>
+                    <input
+                      value={profileForm.telegram}
+                      onChange={(e) => setProfileForm({ ...profileForm, telegram: e.target.value })}
+                      className="input-field py-2 text-xs"
+                      placeholder="e.g. @avamiller_uk"
+                    />
+                  </div>
+                </div>
+
                 <div>
                   <label className="input-label">Traveling soon to</label>
                   <select
@@ -3853,6 +4103,45 @@ export default function AdminDashboardPage() {
                         />
                       </div>
 
+                      {/* Direct WhatsApp & Telegram contact for this profile */}
+                      <div className="p-3 rounded-xl bg-surface-950/60 border border-surface-800 space-y-2.5">
+                        <div>
+                          <p className="text-[11px] font-bold text-white flex items-center gap-1.5">
+                            <Sparkles className="w-3.5 h-3.5 text-accent-teal" />
+                            <span>Profile Messaging Channels (WhatsApp & Telegram)</span>
+                          </p>
+                          <p className="text-[10px] text-surface-400 mt-0.5">
+                            Specify individual numbers/handles for this profile or leave blank to use the global fallback.
+                          </p>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                          <div>
+                            <label className="input-label flex items-center gap-1">
+                              <span className="text-emerald-400 font-bold">WhatsApp:</span>
+                            </label>
+                            <input
+                              type="text"
+                              value={editTripForm.whatsapp}
+                              onChange={(e) => setEditTripForm({ ...editTripForm, whatsapp: e.target.value })}
+                              placeholder="+49 1521 0635575"
+                              className="input-field py-1.5 text-xs w-full"
+                            />
+                          </div>
+                          <div>
+                            <label className="input-label flex items-center gap-1">
+                              <span className="text-sky-400 font-bold">Telegram:</span>
+                            </label>
+                            <input
+                              type="text"
+                              value={editTripForm.telegram}
+                              onChange={(e) => setEditTripForm({ ...editTripForm, telegram: e.target.value })}
+                              placeholder="@avamiller_uk"
+                              className="input-field py-1.5 text-xs w-full"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
                       {/* Cover Photo */}
                       <div className="space-y-1.5">
                         <label className="input-label mb-0 flex items-center gap-1.5">
@@ -4229,6 +4518,158 @@ export default function AdminDashboardPage() {
           }}
           onClose={() => setInspectingProfile(null)}
         />
+      )}
+
+      {/* Modal: Single Lead Delete Confirmation */}
+      {userToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="glass-card max-w-md w-full p-5 space-y-4 border border-surface-700 shadow-2xl rounded-2xl">
+            <div className="flex items-center gap-3 text-red-400">
+              <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">Delete Lead Permanently?</h3>
+                <p className="text-xs text-surface-400">
+                  {userToDelete.displayName || 'Visitor Lead'} ({userToDelete.email || userToDelete.phone || userToDelete.id.slice(0, 8)})
+                </p>
+              </div>
+            </div>
+            <p className="text-xs text-surface-300 leading-relaxed">
+              This will permanently remove this lead and all associated conversations, messages, and funnel history. This action cannot be undone.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-surface-800">
+              <button
+                type="button"
+                onClick={() => setUserToDelete(null)}
+                disabled={deletingUsers}
+                className="btn-ghost py-2 px-3 text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteUsers([userToDelete.id])}
+                disabled={deletingUsers}
+                className="py-2 px-4 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-red-600/30 cursor-pointer disabled:opacity-50"
+              >
+                {deletingUsers ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Lead</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Bulk Lead Delete Confirmation */}
+      {showBulkDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="glass-card max-w-md w-full p-5 space-y-4 border border-surface-700 shadow-2xl rounded-2xl">
+            <div className="flex items-center gap-3 text-red-400">
+              <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">
+                  Delete {selectedUserIds.length} Selected Leads?
+                </h3>
+                <p className="text-xs text-surface-400">
+                  Bulk deletion of {selectedUserIds.length} customer records
+                </p>
+              </div>
+            </div>
+            <p className="text-xs text-surface-300 leading-relaxed">
+              Are you sure you want to delete all <strong className="text-white">{selectedUserIds.length} selected leads</strong>? All associated chat messages, inquiries, and funnel events will be wiped permanently.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-surface-800">
+              <button
+                type="button"
+                onClick={() => setShowBulkDeleteConfirm(false)}
+                disabled={deletingUsers}
+                className="btn-ghost py-2 px-3 text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteUsers(selectedUserIds)}
+                disabled={deletingUsers}
+                className="py-2 px-4 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-red-600/30 cursor-pointer disabled:opacity-50"
+              >
+                {deletingUsers ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting ({selectedUserIds.length})...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete All ({selectedUserIds.length})</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Conversation Delete Confirmation */}
+      {convToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="glass-card max-w-md w-full p-5 space-y-4 border border-surface-700 shadow-2xl rounded-2xl">
+            <div className="flex items-center gap-3 text-red-400">
+              <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">Delete Conversation Thread?</h3>
+                <p className="text-xs text-surface-400">
+                  {convToDelete.customer?.displayName || 'Customer'} ➔ {convToDelete.representedProfile?.displayName || 'Profile'}
+                </p>
+              </div>
+            </div>
+            <p className="text-xs text-surface-300 leading-relaxed">
+              This will permanently delete this entire chat conversation thread and all messages between this customer and profile.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-surface-800">
+              <button
+                type="button"
+                onClick={() => setConvToDelete(null)}
+                disabled={deletingConv}
+                className="btn-ghost py-2 px-3 text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteConversation(convToDelete.id)}
+                disabled={deletingConv}
+                className="py-2 px-4 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-red-600/30 cursor-pointer disabled:opacity-50"
+              >
+                {deletingConv ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Thread</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Admin Image Cropper Modal */}

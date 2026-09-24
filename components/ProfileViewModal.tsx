@@ -182,11 +182,8 @@ export default function ProfileViewModal({
                 </div>
               )}
               <p className="text-xs text-surface-300 flex items-center gap-1 mt-0.5 drop-shadow">
-                <MapPin className="w-3.5 h-3.5 text-brand-400 shrink-0" />
-                <span>
-                  From {[profile.city, profile.country].filter(Boolean).join(', ') || 'abroad'}
-                  {profile.travel ? ' · Planning upcoming trip' : ''}
-                </span>
+                <Plane className="w-3.5 h-3.5 text-brand-400 shrink-0" />
+                <span>Traveler in your city</span>
               </p>
             </div>
           </div>

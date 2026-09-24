@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { requireStaff } from '@/lib/auth';
-import { success, handleApiError } from '@/lib/api-helpers';
+import { success, error, handleApiError } from '@/lib/api-helpers';
 import { extractCityFromText } from '@/lib/market';
 
 const utmInclude = {
@@ -310,3 +310,54 @@ export async function GET(req: NextRequest) {
     return handleApiError(err);
   }
 }
+
+// DELETE /api/admin/conversations — delete one or multiple conversations/threads
+export async function DELETE(req: NextRequest) {
+  try {
+    const staff = await requireStaff(req);
+    const { searchParams } = new URL(req.url);
+    let convIds: string[] = [];
+
+    const idParam = searchParams.get('id');
+    if (idParam) {
+      convIds = [idParam];
+    } else {
+      try {
+        const body = await req.json();
+        if (body.id && typeof body.id === 'string') convIds = [body.id];
+        else if (Array.isArray(body.conversationIds)) {
+          convIds = body.conversationIds.filter((x: unknown): x is string => typeof x === 'string' && Boolean(x));
+        } else if (Array.isArray(body.ids)) {
+          convIds = body.ids.filter((x: unknown): x is string => typeof x === 'string' && Boolean(x));
+        }
+      } catch {
+        // query param or empty body
+      }
+    }
+
+    if (!convIds.length) {
+      return error('No conversation IDs provided for deletion');
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.message.deleteMany({ where: { conversationId: { in: convIds } } });
+      await tx.conversationParticipant.deleteMany({ where: { conversationId: { in: convIds } } });
+      await tx.conversation.deleteMany({ where: { id: { in: convIds } } });
+
+      await tx.auditLog.create({
+        data: {
+          staffId: staff.id,
+          action: 'conversation.bulk_delete',
+          targetType: 'conversation',
+          targetId: convIds.join(','),
+          details: { deletedCount: convIds.length, conversationIds: convIds },
+        },
+      });
+    });
+
+    return success({ deletedCount: convIds.length, conversationIds: convIds });
+  } catch (err) {
+    return handleApiError(err);
+  }
+}
+

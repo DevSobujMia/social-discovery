@@ -19,6 +19,7 @@ import {
 import { getDeviceToken, loadAdParams, readBrowserStore, removeBrowserStore } from '@/lib/device';
 import { canonicalCity } from '@/lib/market';
 import { trackPixel } from '@/lib/pixel';
+import MessageChannelModal from '@/components/MessageChannelModal';
 
 export interface MatchProfile {
   id: string;
@@ -32,6 +33,9 @@ export interface MatchProfile {
   interests?: string[];
   photo?: string | null;
   photos?: Array<{ filePath: string }>;
+  whatsapp?: string | null;
+  telegram?: string | null;
+  phone?: string | null;
   travel?: {
     city: string;
     country: string;
@@ -46,31 +50,31 @@ const SYNC_PROFILES_FEMALE = [
   {
     name: 'Elena',
     age: 24,
-    homeCountry: 'Czech Republic',
+    homeCountry: 'Germany',
     photo: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=360&h=360&fit=crop&q=80',
   },
   {
     name: 'Sophia',
     age: 23,
-    homeCountry: 'Spain',
+    homeCountry: 'Germany',
     photo: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=360&h=360&fit=crop&q=80',
   },
   {
     name: 'Chloe',
     age: 25,
-    homeCountry: 'France',
+    homeCountry: 'Germany',
     photo: 'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=360&h=360&fit=crop&q=80',
   },
   {
     name: 'Maya',
     age: 22,
-    homeCountry: 'United Kingdom',
+    homeCountry: 'Germany',
     photo: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=360&h=360&fit=crop&q=80',
   },
   {
     name: 'Alina',
     age: 24,
-    homeCountry: 'Italy',
+    homeCountry: 'Germany',
     photo: 'https://images.unsplash.com/photo-1531746020798-e6953c6e8e04?w=360&h=360&fit=crop&q=80',
   },
 ];
@@ -79,31 +83,31 @@ const SYNC_PROFILES_MALE = [
   {
     name: 'Liam',
     age: 29,
-    homeCountry: 'Australia',
+    homeCountry: 'Germany',
     photo: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=360&h=360&fit=crop&q=80',
   },
   {
     name: 'Marcus',
     age: 31,
-    homeCountry: 'Canada',
+    homeCountry: 'Germany',
     photo: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=360&h=360&fit=crop&q=80',
   },
   {
     name: 'Daniel',
     age: 30,
-    homeCountry: 'United States',
+    homeCountry: 'Germany',
     photo: 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=360&h=360&fit=crop&q=80',
   },
   {
     name: 'Alexander',
     age: 28,
-    homeCountry: 'United Kingdom',
+    homeCountry: 'Germany',
     photo: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?w=360&h=360&fit=crop&q=80',
   },
   {
     name: 'Lucas',
     age: 32,
-    homeCountry: 'Spain',
+    homeCountry: 'Germany',
     photo: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=360&h=360&fit=crop&q=80',
   },
 ];
@@ -147,7 +151,6 @@ function FoundTripCard({
   profile: MatchProfile;
   onChat: () => void;
 }) {
-  const flag = countryFlag(profile.country);
   const firstName = (profile.displayName || 'Traveller').split(' ')[0];
 
   return (
@@ -170,7 +173,7 @@ function FoundTripCard({
         </div>
       </div>
 
-      <div className="pt-2.5 pb-2 px-0.5 flex items-center justify-between">
+      <div className="pt-2.5 pb-2 px-0.5 flex items-center justify-between gap-1">
         <div className="flex items-center gap-1 min-w-0">
           <span className="text-xs sm:text-[13px] font-bold text-white tracking-tight truncate">
             {firstName}
@@ -178,8 +181,10 @@ function FoundTripCard({
               <span className="font-semibold text-surface-200">, {profile.age}</span>
             ) : null}
           </span>
-          {flag ? <span className="text-xs shrink-0">{flag}</span> : null}
         </div>
+        <span className="text-[10px] text-brand-300 font-semibold bg-brand-500/15 px-2 py-0.5 rounded-full border border-brand-500/25 shrink-0">
+          Traveler in your city
+        </span>
       </div>
 
       <button
@@ -207,15 +212,15 @@ const FALLBACK_FEMALE_PREVIEWS: MatchProfile[] = [
     id: '3e3fad19-3504-46ce-b0f7-0c2181fb65e9',
     userId: 'e6da9d6a-f42e-481d-822e-7d976679bdd0',
     displayName: 'Olivia',
-    age: 29,
+    age: 24,
     gender: 'female',
-    city: 'New York',
-    country: 'United States',
+    city: 'Berlin',
+    country: 'Germany',
     photo: '/api/uploads/profiles/w_blonde_street_eb7cd076-c2de-4c55-ba5f-1c4c23de8b14.jpg',
     travel: {
-      city: 'Dubai',
-      country: 'United Arab Emirates',
-      note: 'Traveling soon. Marina and quieter Dubai.',
+      city: 'Your City',
+      country: '',
+      note: 'Traveler visiting your city · excited to meet locals.',
     },
     isVerified: true,
   },
@@ -223,15 +228,15 @@ const FALLBACK_FEMALE_PREVIEWS: MatchProfile[] = [
     id: '98b16593-3492-41ac-ab25-e4b4ce65dfd0',
     userId: 'bbb848f9-a5eb-49de-bc75-a7026992654e',
     displayName: 'Chloe',
-    age: 26,
+    age: 23,
     gender: 'female',
-    city: 'Los Angeles',
-    country: 'United States',
+    city: 'Munich',
+    country: 'Germany',
     photo: '/api/uploads/profiles/w_brunette_dinner_38dcc320-bad4-4f74-9c0b-a5403febecb7.png',
     travel: {
-      city: 'Abu Dhabi',
-      country: 'United Arab Emirates',
-      note: 'Traveling soon to Abu Dhabi.',
+      city: 'Your City',
+      country: '',
+      note: 'Traveler visiting your city · excited to meet locals.',
     },
     isVerified: true,
   },
@@ -244,13 +249,13 @@ const FALLBACK_MALE_PREVIEWS: MatchProfile[] = [
     displayName: 'Liam',
     age: 29,
     gender: 'male',
-    city: 'Kuwait City',
-    country: 'Australia',
+    city: 'Berlin',
+    country: 'Germany',
     photo: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=360&h=360&fit=crop&q=80',
     travel: {
-      city: 'Kuwait City',
-      country: 'Kuwait',
-      note: 'Visiting Kuwait soon',
+      city: 'Your City',
+      country: '',
+      note: 'Traveler visiting your city · excited to meet locals.',
     },
     isVerified: true,
   },
@@ -260,13 +265,13 @@ const FALLBACK_MALE_PREVIEWS: MatchProfile[] = [
     displayName: 'Marcus',
     age: 31,
     gender: 'male',
-    city: 'Kuwait City',
-    country: 'Canada',
+    city: 'Munich',
+    country: 'Germany',
     photo: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=360&h=360&fit=crop&q=80',
     travel: {
-      city: 'Kuwait City',
-      country: 'Kuwait',
-      note: 'Visiting Kuwait soon',
+      city: 'Your City',
+      country: '',
+      note: 'Traveler visiting your city · excited to meet locals.',
     },
     isVerified: true,
   },
@@ -345,6 +350,15 @@ export default function MatchFunnel({
   const [savedGuestName, setSavedGuestName] = useState<string | null>(null);
   // Dynamic city resolution from URL ad parameters (hydrated on client mount to avoid SSR mismatch)
   const [rawCity, setRawCity] = useState('');
+
+  // 3-Option messaging channel modal state
+  const [channelModalProfile, setChannelModalProfile] = useState<MatchProfile | null>(null);
+  const [showChannelModal, setShowChannelModal] = useState(false);
+
+  const handleOpenChannelOptions = (p: MatchProfile) => {
+    setChannelModalProfile(p);
+    setShowChannelModal(true);
+  };
 
   // Daily search limit state & saved matched history
   const [searchData, setSearchData] = useState<DailySearchData>({
@@ -1195,7 +1209,7 @@ export default function MatchFunnel({
               </button>
               <button
                 type="button"
-                onClick={() => openSayHi(match)}
+                onClick={() => handleOpenChannelOptions(match)}
                 className="flex-[1.5] py-3 rounded-xl bg-white text-surface-950 hover:bg-zinc-100 text-xs font-bold flex items-center justify-center gap-2 shadow-md shadow-white/10 active:scale-98 transition-all cursor-pointer"
               >
                 <MessageCircle className="w-4 h-4 text-brand-500" />
@@ -1204,6 +1218,16 @@ export default function MatchFunnel({
             </div>
           </div>
         </div>
+
+        <MessageChannelModal
+          isOpen={showChannelModal}
+          onClose={() => {
+            setShowChannelModal(false);
+            setChannelModalProfile(null);
+          }}
+          profile={channelModalProfile}
+          onDirectChat={(p) => openSayHi(p as MatchProfile)}
+        />
       </div>
     );
   }
@@ -1261,7 +1285,7 @@ export default function MatchFunnel({
         {displayedProfiles.length > 0 ? (
           <div className="grid grid-cols-2 gap-3.5 sm:gap-4 w-full py-1">
             {displayedProfiles.map((p) => (
-              <FoundTripCard key={p.userId} profile={p} onChat={() => openSayHi(p)} />
+              <FoundTripCard key={p.userId} profile={p} onChat={() => handleOpenChannelOptions(p)} />
             ))}
           </div>
         ) : null}
@@ -1424,7 +1448,16 @@ export default function MatchFunnel({
           Privacy
         </a>
       </p>
+
+      <MessageChannelModal
+        isOpen={showChannelModal}
+        onClose={() => {
+          setShowChannelModal(false);
+          setChannelModalProfile(null);
+        }}
+        profile={channelModalProfile}
+        onDirectChat={(p) => openSayHi(p as MatchProfile)}
+      />
     </div>
   );
-
 }

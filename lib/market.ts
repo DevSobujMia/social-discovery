@@ -402,6 +402,140 @@ export function messagingCostTier(countryCode?: string | null): CostTier {
   return 'standard';
 }
 
+export interface LeadMarketValuation {
+  tierName: string;
+  tierKey: 'tier1' | 'tier2' | 'tier3';
+  range: string;
+  estimatedUsd: number;
+  isHighValue: boolean;
+  currency: string;
+  notes: string;
+}
+
+/**
+ * Calculates current market price / valuation for an incoming lead
+ * based on geographic location, device platform (iOS vs Android), and completion status.
+ */
+export function calculateLeadMarketValue(params: {
+  countryCode?: string | null;
+  geoCountry?: string | null;
+  isComplete?: boolean;
+  sentMessagesCount?: number;
+  hasContact?: boolean;
+  os?: string | null;
+  deviceClass?: string | null;
+}): LeadMarketValuation {
+  const code = (params.countryCode || params.geoCountry || '').toUpperCase();
+  const isComplete = Boolean(
+    params.isComplete ||
+      (params.sentMessagesCount && params.sentMessagesCount > 0) ||
+      params.hasContact
+  );
+  const isIos =
+    (params.os || '').toLowerCase().includes('ios') ||
+    (params.os || '').toLowerCase().includes('mac') ||
+    (params.os || '').toLowerCase().includes('iphone');
+
+  // Tier 1: GCC + Western High Purchasing Power
+  const isTier1 = [
+    'AE',
+    'SA',
+    'QA',
+    'KW',
+    'OM',
+    'BH',
+    'US',
+    'GB',
+    'UK',
+    'DE',
+    'FR',
+    'CA',
+    'AU',
+    'CH',
+    'SE',
+    'NO',
+    'NL',
+    'DK',
+    'SG',
+  ].includes(code);
+
+  // Tier 2: Mid-tier markets
+  const isTier2 = ['MY', 'TR', 'ZA', 'BR', 'MX', 'TH', 'ID', 'PH', 'VN', 'EG', 'MA'].includes(code);
+
+  if (isTier1) {
+    if (isComplete) {
+      const estimated = isIos ? 45 : 35;
+      return {
+        tierName: 'Tier 1 GCC / Premium',
+        tierKey: 'tier1',
+        range: isIos ? '$40 - $55' : '$30 - $45',
+        estimatedUsd: estimated,
+        isHighValue: true,
+        currency: 'USD',
+        notes: isIos ? 'High purchasing power GCC/US iOS lead' : 'High intent GCC/Western verified lead',
+      };
+    } else {
+      const estimated = isIos ? 20 : 15;
+      return {
+        tierName: 'Tier 1 Incomplete',
+        tierKey: 'tier1',
+        range: isIos ? '$18 - $25' : '$12 - $18',
+        estimatedUsd: estimated,
+        isHighValue: true,
+        currency: 'USD',
+        notes: 'High value region visitor (funnel retargeting)',
+      };
+    }
+  }
+
+  if (isTier2) {
+    if (isComplete) {
+      return {
+        tierName: 'Tier 2 Emerging',
+        tierKey: 'tier2',
+        range: '$15 - $25',
+        estimatedUsd: 20,
+        isHighValue: false,
+        currency: 'USD',
+        notes: 'Emerging market engaged lead',
+      };
+    } else {
+      return {
+        tierName: 'Tier 2 Incomplete',
+        tierKey: 'tier2',
+        range: '$5 - $10',
+        estimatedUsd: 7,
+        isHighValue: false,
+        currency: 'USD',
+        notes: 'Emerging market visitor',
+      };
+    }
+  }
+
+  // Tier 3: Standard (IN, PK, BD, etc.)
+  if (isComplete) {
+    return {
+      tierName: 'Tier 3 Standard',
+      tierKey: 'tier3',
+      range: '$8 - $15',
+      estimatedUsd: 10,
+      isHighValue: false,
+      currency: 'USD',
+      notes: 'Standard market active lead',
+    };
+  } else {
+    return {
+      tierName: 'Tier 3 Incomplete',
+      tierKey: 'tier3',
+      range: '$2 - $5',
+      estimatedUsd: 3,
+      isHighValue: false,
+      currency: 'USD',
+      notes: 'Standard visitor lead',
+    };
+  }
+}
+
 /**
  * Pick the channel to notify this lead on.
  *

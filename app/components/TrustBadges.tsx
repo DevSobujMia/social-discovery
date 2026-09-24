@@ -13,7 +13,7 @@ export function TrustBadges({
   inViewerCity?: boolean;
   tone?: 'plain' | 'overlay';
 }) {
-  const cityLabel = visitingCity ? `Visiting ${visitingCity}` : null;
+  const cityLabel = visitingCity ? 'Traveler in your city' : null;
   const localLabel = inViewerCity ? 'Your city' : null;
 
   if (!isVerified && !cityLabel && !localLabel) return null;

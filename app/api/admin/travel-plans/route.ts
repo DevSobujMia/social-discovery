@@ -46,6 +46,13 @@ export async function GET(req: NextRequest) {
             id: true,
             displayName: true,
             userId: true,
+            user: {
+              select: {
+                whatsapp: true,
+                telegram: true,
+                phone: true,
+              },
+            },
             photos: { where: { isPrimary: true }, take: 1 },
           },
         },
@@ -59,6 +66,9 @@ export async function GET(req: NextRequest) {
         profileId: plan.profileId,
         profileName: plan.profile.displayName,
         profileUserId: plan.profile.userId,
+        whatsapp: plan.profile.user?.whatsapp || null,
+        telegram: plan.profile.user?.telegram || null,
+        phone: plan.profile.user?.phone || null,
         photo: plan.photoUrl || plan.profile.photos[0]?.filePath || null,
         photoUrl: plan.photoUrl,
         timing: plan.timing,
@@ -155,11 +165,14 @@ export async function PATCH(req: NextRequest) {
   try {
     const staff = await requireStaff();
     const body = await req.json();
-    const { id, city, country, timing, fromDate, toDate, note, photoUrl, isActive } = body;
+    const { id, city, country, timing, fromDate, toDate, note, photoUrl, isActive, whatsapp, telegram, phone, displayName } = body;
 
     if (!id) return error('A travel plan ID is required');
 
-    const existing = await prisma.travelPlan.findUnique({ where: { id } });
+    const existing = await prisma.travelPlan.findUnique({
+      where: { id },
+      include: { profile: true },
+    });
     if (!existing) return error('That travel plan no longer exists', 404);
 
     const data: Record<string, unknown> = {};
@@ -209,6 +222,28 @@ export async function PATCH(req: NextRequest) {
     }
 
     const updated = await prisma.travelPlan.update({ where: { id }, data });
+
+    // Update associated profile/user contact info if supplied
+    if (existing.profile) {
+      if (displayName !== undefined && displayName.trim()) {
+        await prisma.profile.update({
+          where: { id: existing.profileId },
+          data: { displayName: displayName.trim() },
+        });
+      }
+
+      const userUpdates: Record<string, unknown> = {};
+      if (whatsapp !== undefined) userUpdates.whatsapp = whatsapp ? whatsapp.trim() : null;
+      if (telegram !== undefined) userUpdates.telegram = telegram ? telegram.trim().replace(/^@/, '') : null;
+      if (phone !== undefined) userUpdates.phone = phone ? phone.trim() : null;
+
+      if (Object.keys(userUpdates).length > 0) {
+        await prisma.user.update({
+          where: { id: existing.profile.userId },
+          data: userUpdates,
+        });
+      }
+    }
 
     await prisma.auditLog
       .create({

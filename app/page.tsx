@@ -36,6 +36,7 @@ import { TrustBadges } from './components/TrustBadges';
 import { PostTravelPlanModal } from '@/components/PostTravelPlanModal';
 import { ImageCropperModal } from '@/components/ImageCropperModal';
 import ProfileViewModal from '@/components/ProfileViewModal';
+import MessageChannelModal from '@/components/MessageChannelModal';
 import {
   chatBubbleTime,
   chatListTime,
@@ -413,6 +414,10 @@ export default function AppHome() {
   const confirmBlockTargetRef = useRef(confirmBlockTarget);
   confirmBlockTargetRef.current = confirmBlockTarget;
   const closingModalViaHistoryRef = useRef<string | null>(null);
+
+  // 3-Option Message Channel Modal State for profile view
+  const [pageChannelModalProfile, setPageChannelModalProfile] = useState<any | null>(null);
+  const [showPageChannelModal, setShowPageChannelModal] = useState(false);
 
   // In-App Quick Reply Toast Banner State
   interface QuickReplyToastData {
@@ -4124,13 +4129,10 @@ export default function AppHome() {
           profile={selectedProfile}
           onClose={handleCloseProfile}
           onChat={() => {
-            const uid = selectedProfile.userId;
-            if (activeChat?.participant?.userId === uid) {
-              handleCloseProfile();
-            } else {
-              handleStartConversation(uid);
-              handleCloseProfile();
-            }
+            const target = selectedProfile;
+            handleCloseProfile();
+            setPageChannelModalProfile(target);
+            setShowPageChannelModal(true);
           }}
           chatButtonText={activeChat?.participant?.userId === selectedProfile.userId ? 'Chat' : 'Say hi'}
           showBlockButton={Boolean(currentUser && currentUser.id !== selectedProfile.userId)}
@@ -4142,6 +4144,22 @@ export default function AppHome() {
           }}
         />
       )}
+
+      {/* MODAL: 3-OPTION MESSAGING CHANNELS (DIRECT, WHATSAPP, TELEGRAM) */}
+      <MessageChannelModal
+        isOpen={showPageChannelModal}
+        onClose={() => {
+          setShowPageChannelModal(false);
+          setPageChannelModalProfile(null);
+        }}
+        profile={pageChannelModalProfile}
+        onDirectChat={(p) => {
+          const uid = p.userId || p.id;
+          if (uid) {
+            handleStartConversation(uid);
+          }
+        }}
+      />
 
       {/* ============================================================ */}
       {/* MODAL: CONFIRM USER BLOCK                                    */}

@@ -18,18 +18,18 @@ export interface TravelInfoLike {
  * Soft travel signal — no fixed-date urgency. Product copy is always
  * “Traveling soon”, while backend dates still drive ranking.
  */
-export function TravelUrgencyBadge({ travel }: { travel: TravelInfoLike }) {
+export function TravelUrgencyBadge({ travel }: { travel?: TravelInfoLike }) {
   return (
     <span className="badge border text-[10px] font-bold px-2 py-0.5 backdrop-blur-md inline-flex items-center gap-1 bg-surface-900/85 text-surface-100 border-surface-600/70">
       <Plane className="w-3 h-3 shrink-0 text-brand-300" />
-      <span>Traveling soon · {travel.city}</span>
+      <span>Traveler in your city</span>
     </span>
   );
 }
 
 /** Destination ribbon without hard calendar dates. */
-export function TravelRibbon({ travel }: { travel: TravelInfoLike }) {
-  const highlight = travel.isViewerCity;
+export function TravelRibbon({ travel }: { travel?: TravelInfoLike }) {
+  const highlight = travel?.isViewerCity;
 
   return (
     <div
@@ -42,7 +42,7 @@ export function TravelRibbon({ travel }: { travel: TravelInfoLike }) {
       <Plane
         className={`w-3.5 h-3.5 shrink-0 ${highlight ? 'text-brand-300' : 'text-surface-400'}`}
       />
-      <span className="truncate">Traveling soon · {travel.city}</span>
+      <span className="truncate">Traveler visiting your city</span>
     </div>
   );
 }
