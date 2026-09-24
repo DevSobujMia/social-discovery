@@ -45,37 +45,37 @@ export interface MatchProfile {
   isVerified?: boolean;
 }
 
-/** Faces used only in the Find click animation. Not live profile data. */
+/** Real profile faces used in the Find click animation and avatars */
 const SYNC_PROFILES_FEMALE = [
   {
     name: 'Elena',
     age: 24,
     homeCountry: 'Germany',
-    photo: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=360&h=360&fit=crop&q=80',
+    photo: '/api/uploads/profiles/w_blonde_street_eb7cd076-c2de-4c55-ba5f-1c4c23de8b14.jpg',
   },
   {
     name: 'Sophia',
     age: 23,
     homeCountry: 'Germany',
-    photo: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=360&h=360&fit=crop&q=80',
+    photo: '/api/uploads/profiles/w_brunette_dinner_38dcc320-bad4-4f74-9c0b-a5403febecb7.png',
   },
   {
     name: 'Chloe',
     age: 25,
     homeCountry: 'Germany',
-    photo: 'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=360&h=360&fit=crop&q=80',
+    photo: '/api/uploads/profiles/w_brunette_cafe_4b99c9a7-0bef-44cd-be26-3231ed4b81a8.png',
   },
   {
-    name: 'Maya',
-    age: 22,
-    homeCountry: 'Germany',
-    photo: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=360&h=360&fit=crop&q=80',
-  },
-  {
-    name: 'Alina',
+    name: 'Emma',
     age: 24,
     homeCountry: 'Germany',
-    photo: 'https://images.unsplash.com/photo-1531746020798-e6953c6e8e04?w=360&h=360&fit=crop&q=80',
+    photo: '/api/uploads/profiles/w_blonde_mirror_63fefa87-5295-4fda-819d-534145fb0a60.png',
+  },
+  {
+    name: 'Sophie',
+    age: 24,
+    homeCountry: 'Germany',
+    photo: '/api/uploads/profiles/w_blonde_bookstore_0315588a-f3ab-4045-b89d-9c16b0675dcd.jpg',
   },
 ];
 
@@ -84,44 +84,45 @@ const SYNC_PROFILES_MALE = [
     name: 'Liam',
     age: 29,
     homeCountry: 'Germany',
-    photo: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=360&h=360&fit=crop&q=80',
+    photo: '/api/uploads/profiles/m_liam_park_b7ab04fd-f97b-47ab-b9e5-60fa91d938d7.jpg',
   },
   {
     name: 'Marcus',
     age: 31,
     homeCountry: 'Germany',
-    photo: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=360&h=360&fit=crop&q=80',
+    photo: '/api/uploads/profiles/m_marcus_bridge_e06bdc1e-a827-413f-a2e2-c697ff85016b.jpg',
   },
   {
     name: 'Daniel',
     age: 30,
     homeCountry: 'Germany',
-    photo: 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=360&h=360&fit=crop&q=80',
+    photo: '/api/uploads/profiles/m_daniel_library_773fdff4-88a3-4f25-8e85-480886c5e180.jpg',
   },
   {
     name: 'Alexander',
     age: 28,
     homeCountry: 'Germany',
-    photo: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?w=360&h=360&fit=crop&q=80',
+    photo: '/api/uploads/profiles/m_alex_cafe_0876fcda-5312-4b94-af55-b1131f80286e.jpg',
   },
   {
     name: 'Lucas',
     age: 32,
     homeCountry: 'Germany',
-    photo: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=360&h=360&fit=crop&q=80',
+    photo: '/api/uploads/profiles/m_lucas_coastal_750a9480-228e-452e-99a5-dd4afcccf591.jpg',
   },
 ];
 
 const SOCIAL_PROOF_AVATARS = [
-  'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=80&h=80&fit=crop&q=60',
-  'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop&q=60',
-  'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=80&h=80&fit=crop&q=60',
-  'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=80&h=80&fit=crop&q=60',
+  '/api/uploads/profiles/ava-brooks.png',
+  '/api/uploads/profiles/ava-miller.png',
+  '/api/uploads/profiles/w_brunette_dinner_38dcc320-bad4-4f74-9c0b-a5403febecb7.png',
+  '/api/uploads/profiles/w_blonde_street_eb7cd076-c2de-4c55-ba5f-1c4c23de8b14.jpg',
 ];
 
 function countryFlag(country?: string | null): string {
-  if (!country) return '✈️';
+  if (!country) return '🇩🇪';
   const lower = country.toLowerCase().trim();
+  if (lower === 'germany' || lower === 'de') return '🇩🇪';
   if (lower === 'us' || lower.includes('united states') || lower.includes('usa')) return '🇺🇸';
   if (lower === 'gb' || lower === 'uk' || lower.includes('united kingdom') || lower.includes('england')) return '🇬🇧';
   if (lower.includes('czech') || lower === 'cz') return '🇨🇿';
@@ -129,18 +130,17 @@ function countryFlag(country?: string | null): string {
   if (lower.includes('france') || lower === 'fr') return '🇫🇷';
   if (lower.includes('italy') || lower === 'it') return '🇮🇹';
   if (lower.includes('russia') || lower === 'ru') return '🇷🇺';
-  if (lower.includes('germany') || lower === 'de') return '🇩🇪';
   if (lower.includes('canada') || lower === 'ca') return '🇨🇦';
   if (lower.includes('australia') || lower === 'au') return '🇦🇺';
   if (lower.includes('uae') || lower.includes('emirates') || lower === 'ae') return '🇦🇪';
-  return '✈️';
+  return '🇩🇪';
 }
 
 function photoOf(p: MatchProfile): string {
   return (
     p.photo ||
     p.photos?.[0]?.filePath ||
-    'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=800&auto=format&fit=crop&q=80'
+    '/api/uploads/profiles/w_blonde_street_eb7cd076-c2de-4c55-ba5f-1c4c23de8b14.jpg'
   );
 }
 
