@@ -741,10 +741,12 @@ export default function MatchFunnel({
       }
     };
 
-    // 1. Exact gender + ad city + age + active trip
+    // 1. Exact gender + ad city + age + active trip. Publish immediately so Find
+    // can start while the wider searches fill in.
     pushUnique(
       await fetchOnce({ gender: lookingFor, withAge: true, travellingOnly: true })
     );
+    if (merged.length > 0) setPool([...merged]);
     // 2. Exact gender + ad city + any age + active trip
     pushUnique(
       await fetchOnce({ gender: lookingFor, withAge: false, travellingOnly: true })
@@ -920,7 +922,7 @@ export default function MatchFunnel({
             return [];
           }
         })(),
-        new Promise((r) => setTimeout(r, 1800)),
+        new Promise((r) => setTimeout(r, pool.length > 0 ? 450 : 0)),
       ]);
       list = loadedList;
     } catch {

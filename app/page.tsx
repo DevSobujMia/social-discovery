@@ -3055,7 +3055,7 @@ export default function AppHome() {
         {/* ============================================================ */}
         {/* AREA 1: DISCOVERY & MATCHING                                  */}
         {/* ============================================================ */}
-        {navReady && activeTab === 'discover' && (
+        {(!navReady || activeTab === 'discover') && (
           <MatchFunnel onSayHi={handleMatchSayHi} currentUser={currentUser} />
         )}
 

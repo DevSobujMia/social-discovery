@@ -61,6 +61,8 @@ export default function RootLayout({
         <link rel="icon" href="/favicon.ico" sizes="32x32" />
         <link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192" />
         <link rel="apple-touch-icon" href="/icon-192.png" />
+        <link rel="preload" as="image" href="/api/uploads/profiles/w_blonde_street_eb7cd076-c2de-4c55-ba5f-1c4c23de8b14.jpg" />
+        <link rel="preload" as="image" href="/api/uploads/profiles/w_brunette_dinner_38dcc320-bad4-4f74-9c0b-a5403febecb7.png" />
         <meta name="mobile-web-app-capable" content="yes" />
         <script
           dangerouslySetInnerHTML={{
