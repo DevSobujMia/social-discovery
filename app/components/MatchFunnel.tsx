@@ -428,12 +428,27 @@ export default function MatchFunnel({
       return defaultProfiles;
     }
 
+    // Always hydrate matchedHistory items with the freshest live data from pool (e.g. newly uploaded photos, name/age changes)
+    const hydratedHistory = matchedHistory.map((hist) => {
+      const live = pool.find((p) => p.userId === hist.userId || p.id === hist.id);
+      if (live) {
+        return {
+          ...hist,
+          ...live,
+          displayName: live.displayName || hist.displayName,
+          age: live.age ?? hist.age,
+          photo: photoOf(live) || photoOf(hist),
+        };
+      }
+      return hist;
+    });
+
     // Filter matchedHistory matching current lookingFor gender if possible
-    const genderedHistory = matchedHistory.filter(
+    const genderedHistory = hydratedHistory.filter(
       (p) => !p.gender || p.gender.trim().toLowerCase() === lookingFor.trim().toLowerCase()
     );
 
-    const historyToUse = genderedHistory.length > 0 ? genderedHistory : matchedHistory;
+    const historyToUse = genderedHistory.length > 0 ? genderedHistory : hydratedHistory;
 
     if (historyToUse.length >= 2) {
       return [historyToUse[0], historyToUse[1]];
@@ -447,7 +462,7 @@ export default function MatchFunnel({
     }
 
     return defaultProfiles;
-  }, [matchedHistory, defaultProfiles, lookingFor]);
+  }, [matchedHistory, defaultProfiles, lookingFor, pool]);
 
   // Initialize search limit and matched history from localStorage on client mount
   useEffect(() => {
