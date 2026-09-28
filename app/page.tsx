@@ -37,6 +37,8 @@ import { PostTravelPlanModal } from '@/components/PostTravelPlanModal';
 import { ImageCropperModal } from '@/components/ImageCropperModal';
 import ProfileViewModal from '@/components/ProfileViewModal';
 import MessageChannelModal from '@/components/MessageChannelModal';
+import MaintenanceView from '@/components/MaintenanceView';
+import { MAINTENANCE_CONFIG } from '@/config/maintenance';
 import {
   chatBubbleTime,
   chatListTime,
@@ -249,6 +251,10 @@ interface PendingIntent {
 }
 
 export default function AppHome() {
+  if (MAINTENANCE_CONFIG.enabled) {
+    return <MaintenanceView />;
+  }
+
   // Navigation & View state — restored from localStorage after mount (PWA refresh).
   const [activeTab, setActiveTab] = useState<AppTab>('discover');
   const [navReady, setNavReady] = useState(false);
