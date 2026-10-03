@@ -1,0 +1,9 @@
+# https://www.robotstxt.org/robotstxt.html
+User-agent: *
+Disallow: /chat
+Disallow: /whatsapp
+Disallow: /admin
+Disallow: /api/
+Allow: /
+
+Sitemap: https://cityhost.live/sitemap.xml
