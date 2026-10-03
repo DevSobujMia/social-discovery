@@ -1,77 +1,40 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import HeartMark from '@/app/components/HeartMark';
-import { ShieldCheck, MessageCircle, ExternalLink, Lock, CheckCircle2 } from 'lucide-react';
+import { ShieldCheck, MessageCircle, ExternalLink, Lock, CheckCircle2, Clock, Sparkles } from 'lucide-react';
 
 const TARGET_PHONE = '15187099695';
 const BASE_WHATSAPP_URL = `https://wa.me/${TARGET_PHONE}`;
 
 export default function WhatsAppLandingCard() {
   const [targetUrl, setTargetUrl] = useState(BASE_WHATSAPP_URL);
-  const [countdown, setCountdown] = useState(2);
-  const [redirectAttempted, setRedirectAttempted] = useState(false);
 
   useEffect(() => {
-    // 1. Check if user came with any custom query text (?text=Hello)
+    // Check if user came with custom query text (?text=...)
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const text = params.get('text');
-      const finalUrl = text
-        ? `${BASE_WHATSAPP_URL}?text=${encodeURIComponent(text)}`
-        : BASE_WHATSAPP_URL;
-      setTargetUrl(finalUrl);
-
-      // 2. Track Meta Pixel Contact/Lead event for Facebook Ads optimization
-      try {
-        const win = window as any;
-        if (typeof win.fbq === 'function') {
-          win.fbq('track', 'Contact', {
-            content_name: 'WhatsApp Landing Page',
-            content_category: 'Direct Chat',
-            phone: TARGET_PHONE,
-          });
-        }
-      } catch (err) {
-        console.warn('Meta Pixel tracking skipped:', err);
+      if (text) {
+        setTargetUrl(`${BASE_WHATSAPP_URL}?text=${encodeURIComponent(text)}`);
       }
-
-      // 3. Auto-redirect immediately via client navigation
-      const timer = setTimeout(() => {
-        setRedirectAttempted(true);
-        window.location.href = finalUrl;
-      }, 800);
-
-      // Countdown ticker for UI feedback
-      const interval = setInterval(() => {
-        setCountdown((prev) => {
-          if (prev <= 1) {
-            clearInterval(interval);
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-
-      return () => {
-        clearTimeout(timer);
-        clearInterval(interval);
-      };
     }
   }, []);
 
-  const handleManualClick = () => {
+  const handleWhatsAppClick = () => {
     try {
       const win = window as any;
       if (typeof win.fbq === 'function') {
-        win.fbq('trackCustom', 'WhatsAppButtonClick', {
+        win.fbq('track', 'Contact', {
+          content_name: 'WhatsApp Button Click',
+          content_category: 'Direct Chat',
           phone: TARGET_PHONE,
-          target_url: targetUrl,
         });
       }
-    } catch {}
-    window.location.href = targetUrl;
+    } catch (e) {
+      // ignore
+    }
   };
 
   return (
@@ -81,7 +44,7 @@ export default function WhatsAppLandingCard() {
         className="pointer-events-none absolute inset-0 overflow-hidden"
         aria-hidden="true"
       >
-        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[340px] sm:w-[480px] h-[340px] sm:h-[480px] rounded-full bg-[#25D366]/10 blur-[120px]" />
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[340px] sm:w-[500px] h-[340px] sm:h-[500px] rounded-full bg-[#25D366]/10 blur-[130px]" />
         <div className="absolute bottom-1/4 left-1/2 -translate-x-1/2 w-[300px] h-[300px] rounded-full bg-brand-500/10 blur-[130px]" />
       </div>
 
@@ -99,17 +62,17 @@ export default function WhatsAppLandingCard() {
         </div>
       </header>
 
-      {/* Center Landing / Fallback Card */}
+      {/* Center Landing Card with Big WhatsApp Button */}
       <section className="relative z-10 w-full max-w-sm sm:max-w-md my-auto">
-        <div className="relative rounded-3xl bg-surface-900/80 border border-surface-700/60 p-6 sm:p-8 backdrop-blur-xl shadow-2xl shadow-black/80 flex flex-col items-center text-center">
-          {/* Animated WhatsApp Emblem with radar pulse */}
+        <div className="relative rounded-3xl bg-surface-900/85 border border-surface-700/60 p-6 sm:p-8 backdrop-blur-xl shadow-2xl shadow-black/80 flex flex-col items-center text-center">
+          
+          {/* WhatsApp Brand Badge */}
           <div className="relative my-2 flex items-center justify-center">
-            {/* Pulsing radar ring */}
-            <span className="absolute w-24 h-24 rounded-full bg-[#25D366]/20 animate-ping opacity-60" />
-            <span className="absolute w-20 h-20 rounded-full bg-[#25D366]/25 animate-pulse" />
+            {/* Soft Ambient Glow */}
+            <span className="absolute w-20 h-20 rounded-full bg-[#25D366]/20 blur-md" />
             
             {/* WhatsApp Icon Circle */}
-            <div className="relative w-16 h-16 sm:w-18 sm:h-18 rounded-2xl bg-gradient-to-tr from-[#1ebd59] to-[#25D366] flex items-center justify-center shadow-lg shadow-[#25D366]/35 ring-4 ring-surface-900">
+            <div className="relative w-16 h-16 sm:w-18 sm:h-18 rounded-2xl bg-gradient-to-tr from-[#1ebd59] to-[#25D366] flex items-center justify-center shadow-lg shadow-[#25D366]/30 ring-4 ring-surface-900">
               <svg
                 viewBox="0 0 24 24"
                 width="34"
@@ -122,58 +85,58 @@ export default function WhatsAppLandingCard() {
             </div>
           </div>
 
-          {/* Heading */}
-          <div className="mt-4 space-y-1.5">
-            <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
-              {countdown > 0 ? 'Connecting to WhatsApp...' : 'Ready to Chat'}
+          {/* Heading & Subtitle */}
+          <div className="mt-4 space-y-2">
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+              Chat on WhatsApp
             </h1>
-            <p className="text-xs sm:text-sm text-surface-400 max-w-[280px] sm:max-w-xs mx-auto leading-relaxed">
-              Opening your direct WhatsApp chat with City Host.
+            <p className="text-xs sm:text-sm text-surface-300 max-w-[290px] sm:max-w-xs mx-auto leading-relaxed">
+              Connect directly with City Host to chat with verified travellers and explore local city meetups.
             </p>
           </div>
 
-          {/* Status / Auto-redirect indicator */}
-          <div className="mt-4 mb-6 px-3 py-1.5 rounded-full bg-surface-800/80 border border-surface-700/50 flex items-center gap-2 text-xs text-surface-300">
-            <div className="w-2 h-2 rounded-full bg-[#25D366] animate-pulse" />
-            <span>
-              {countdown > 0
-                ? `Redirecting automatically in ${countdown}s...`
-                : 'Click button below to start chat'}
+          {/* Online Status Pill */}
+          <div className="mt-3.5 mb-6 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-surface-800/90 border border-surface-700/60 text-xs text-surface-200">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
             </span>
+            <span className="font-medium">Online now • Fast response</span>
           </div>
 
-          {/* Primary Action Button: "Continue to WhatsApp" */}
+          {/* Primary Big WhatsApp Button */}
           <a
             href={targetUrl}
-            onClick={handleManualClick}
-            className="group w-full py-4 px-6 rounded-2xl bg-[#25D366] hover:bg-[#20bd5a] active:bg-[#1da850] active:scale-[0.98] transition-all duration-200 text-white font-bold text-base sm:text-lg flex items-center justify-center gap-3 shadow-xl shadow-[#25D366]/30 hover:shadow-[#25D366]/40 cursor-pointer"
+            onClick={handleWhatsAppClick}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="group w-full py-4.5 px-6 rounded-2xl bg-[#25D366] hover:bg-[#20bd5a] active:bg-[#1da850] active:scale-[0.98] transition-all duration-200 text-white font-extrabold text-lg sm:text-xl flex items-center justify-center gap-3 shadow-xl shadow-[#25D366]/30 hover:shadow-[#25D366]/45 cursor-pointer"
           >
-            <MessageCircle className="w-5 h-5 fill-white text-[#25D366]" />
-            <span>Continue to WhatsApp</span>
-            <ExternalLink className="w-4 h-4 opacity-75 group-hover:opacity-100 transition-opacity" />
+            <MessageCircle className="w-6 h-6 fill-white text-[#25D366]" />
+            <span>Chat on WhatsApp</span>
+            <ExternalLink className="w-4 h-4 opacity-80 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all" />
           </a>
 
-          {/* Fallback helper text */}
-          <p className="mt-3.5 text-[11px] sm:text-xs text-surface-400">
-            If WhatsApp does not open automatically, tap the button above.
+          {/* Clear Sub-button info */}
+          <p className="mt-3.5 text-xs text-surface-400">
+            Click the button to open chat directly in WhatsApp.
           </p>
 
-          {/* Trust badges */}
-          <div className="mt-6 pt-5 border-t border-surface-800/80 w-full flex items-center justify-around text-[11px] text-surface-400">
-            <div className="flex items-center gap-1.5">
-              <Lock className="w-3.5 h-3.5 text-emerald-400" />
+          {/* Trust Highlights */}
+          <div className="mt-6 pt-5 border-t border-surface-800/80 w-full grid grid-cols-2 gap-2 text-left text-[11px] text-surface-300">
+            <div className="flex items-center gap-2 bg-surface-950/40 p-2.5 rounded-xl border border-surface-800/50">
+              <Lock className="w-4 h-4 text-emerald-400 shrink-0" />
               <span>End-to-End Encrypted</span>
             </div>
-            <span className="text-surface-700">•</span>
-            <div className="flex items-center gap-1.5">
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Official Channel</span>
+            <div className="flex items-center gap-2 bg-surface-950/40 p-2.5 rounded-xl border border-surface-800/50">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>Direct Support</span>
             </div>
           </div>
         </div>
       </section>
 
-      {/* Footer / Privacy Policy (Crucial for Facebook Ads approval) */}
+      {/* Footer / Privacy & Terms (Crucial for Meta Ad review approval) */}
       <footer className="relative z-10 text-center space-y-2 mt-4">
         <p className="text-[11px] text-surface-500">
           City Host — Travellers visiting your city.

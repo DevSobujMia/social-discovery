@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import WhatsAppLandingCard from '@/components/WhatsAppLandingCard';
 
 export const metadata: Metadata = {
-  title: 'Continue to WhatsApp | City Host',
-  description: 'Chat directly with City Host on WhatsApp.',
+  title: 'Chat on WhatsApp | City Host',
+  description: 'Connect directly with City Host on WhatsApp to meet verified travellers and explore local city meetups.',
   robots: {
     index: false,
     follow: false,
@@ -24,27 +24,6 @@ export default function WhatsAppAliasPage() {
     <>
       <head>
         <meta name="robots" content="noindex, nofollow, noarchive" />
-        <meta httpEquiv="refresh" content="2; url=https://wa.me/15187099695" />
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              (function() {
-                var target = "https://wa.me/15187099695";
-                try {
-                  if (window.location.search) {
-                    var p = new URLSearchParams(window.location.search);
-                    var t = p.get('text');
-                    if (t) { target += "?text=" + encodeURIComponent(t); }
-                  }
-                  if (window.fbq) {
-                    window.fbq('track', 'Contact', { content_name: 'WhatsApp Auto Redirect' });
-                  }
-                } catch(e) {}
-                window.location.href = target;
-              })();
-            `,
-          }}
-        />
       </head>
       <WhatsAppLandingCard />
     </>
