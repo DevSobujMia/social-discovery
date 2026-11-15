@@ -452,11 +452,8 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
 
   const brandName = bootstrap?.brandName || 'CityHost Concierge';
   const personaName = bootstrap?.persona?.name || 'Nadia';
-  const personaCity =
-    bootstrap?.geo?.city && bootstrap.geo.city !== 'Unknown'
-      ? bootstrap.geo.city
-      : bootstrap?.persona?.city || 'Riyadh';
-  const personaFlag = bootstrap?.geo?.flag || '🌐';
+  const personaCity = 'your city';
+  const personaFlag = '🌐';
   const greetingText =
     bootstrap?.greeting ||
     `Welcome to ${brandName}. Please confirm two quick details so our concierge in ${personaCity} can connect you privately.`;
@@ -511,7 +508,7 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
                 <p className="text-[11px] text-surface-400 truncate flex items-center gap-1.5">
                   <span>{personaFlag}</span>
                   <span>
-                    {personaCity} • {bootstrap?.persona?.badge || 'Verified Host Desk'}
+                    Traveler in your city • {bootstrap?.persona?.badge || 'Verified Host Desk'}
                   </span>
                 </p>
               </div>
@@ -536,7 +533,7 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
                   Opening WhatsApp Chat...
                 </h2>
                 <p className="text-xs text-surface-400">
-                  Connecting you privately with our {personaCity} concierge desk.
+                  Connecting you privately with our verified concierge desk.
                 </p>
               </div>
               {errorMsg && (
@@ -853,7 +850,7 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
                       <span>Concierge Ready • #{result.leadCode}</span>
                     </div>
                     <h2 className="text-base font-bold text-white">
-                      {result.agentName} ({result.flag} {result.city})
+                      {result.agentName}
                     </h2>
                     <p className="text-xs text-surface-400 mt-0.5">
                       Tap the green button below to start your private WhatsApp conversation.
@@ -901,8 +898,7 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
                   </div>
 
                   <p className="text-[11px] text-surface-300 leading-relaxed">
-                    Assigned Desk: <strong className="text-white">{result.agentName}</strong> ({result.agentRole}) •{' '}
-                    {result.flag} {result.city}
+                    Assigned Desk: <strong className="text-white">{result.agentName}</strong> ({result.agentRole})
                   </p>
                 </div>
               )}

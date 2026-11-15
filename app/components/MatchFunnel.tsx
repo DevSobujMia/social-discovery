@@ -345,8 +345,8 @@ export default function MatchFunnel({
   const limitToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Hydrate after mount — reading localStorage during render breaks SSR/client match.
   const [savedGuestName, setSavedGuestName] = useState<string | null>(null);
-  // Dynamic city resolution from URL ad parameters (hydrated on client mount to avoid SSR mismatch)
-  const [rawCity, setRawCity] = useState('');
+  // Universal home copy: never inject specific city names from URL or localStorage onto the home page
+  const [rawCity] = useState('');
 
   // 3-Option messaging channel modal state
   const [channelModalProfile, setChannelModalProfile] = useState<MatchProfile | null>(null);
@@ -502,9 +502,8 @@ export default function MatchFunnel({
   }, [currentUser?.profile?.displayName]);
 
   useEffect(() => {
-    const params = loadAdParams();
-    const city = canonicalCity(params?.city || params?.destination);
-    if (city) setRawCity(city);
+    // Keep URL ad params synced for analytics without injecting any specific city into home UI
+    loadAdParams();
   }, []);
 
   // Dynamic realistic online customer count (1,700 to 2,700, updates naturally every 2-4 minutes)
@@ -950,11 +949,7 @@ export default function MatchFunnel({
     }
 
     if (!list.length) {
-      setError(
-        rawCity
-          ? `No travellers visiting ${rawCity} right now. Please try again in a moment.`
-          : 'No travellers available right now. Please try again in a moment.'
-      );
+      setError('No travellers matching that filter right now. Please try again in a moment.');
       setPhase('home');
       return;
     }
@@ -962,11 +957,7 @@ export default function MatchFunnel({
     const exclude = usedIdsRef.current;
     const { chosen, resetUsed } = pickMatch(list, exclude);
     if (!chosen) {
-      setError(
-        rawCity
-          ? `No travellers visiting ${rawCity} right now. Please try again in a moment.`
-          : 'No travellers available right now. Please try again in a moment.'
-      );
+      setError('No travellers matching that filter right now. Please try again in a moment.');
       setPhase('home');
       return;
     }
@@ -1132,7 +1123,7 @@ export default function MatchFunnel({
             <span>Matching verified profiles…</span>
           </p>
           <p className="text-xs text-surface-400">
-            {rawCity ? `Travellers planning trips to ${rawCity}` : 'Connecting with verified travellers'}
+            Finding travellers visiting your city…
           </p>
         </div>
       </div>
@@ -1293,7 +1284,7 @@ export default function MatchFunnel({
 
       <div className="text-center mb-6 space-y-1.5">
         <h1 suppressHydrationWarning className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-          {rawCity ? `Meet Travelers in ${rawCity}.` : 'Meet Travelers in your city.'}
+          Meet Travelers in your city.
         </h1>
         <p className="text-xs text-surface-400 max-w-sm mx-auto leading-relaxed">
           Connect with travelers who have shared their trip plans and are looking for a local friend or guide.

@@ -51,12 +51,12 @@ export const DEFAULT_STEALTH_CONFIG: StealthConfig = {
   requirePhoneCapture: false,
   brandName: 'CityHost Concierge',
   personaName: 'Nadia',
-  personaCity: 'Riyadh',
+  personaCity: 'your city',
   personaBadge: 'Verified Private Host',
   greetingTemplate:
     'Welcome to {brand}. Please confirm two quick details so our concierge in {city} can connect you privately.',
   whatsappMessageTemplate:
-    'Hi, I am connecting from CityHost ({city}) — Verified Pass #{code}',
+    'Hi, I am connecting from CityHost — Verified Pass #{code}',
   agents: [
     {
       id: 'primary-desk',
