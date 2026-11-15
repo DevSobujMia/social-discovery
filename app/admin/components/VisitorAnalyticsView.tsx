@@ -569,8 +569,8 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
                           </span>
                         )}
                         {v.honeypotContact && (
-                          <span className="px-2 py-0.5 rounded bg-rose-950/60 border border-rose-500/40 text-amber-200 font-semibold">
-                            Trap Input: {v.honeypotContact}
+                          <span className="px-2 py-0.5 rounded bg-rose-950/60 border border-rose-500/40 text-amber-200 font-semibold font-mono text-[10px]">
+                            Deep Device: {v.honeypotContact}
                           </span>
                         )}
                       </div>
