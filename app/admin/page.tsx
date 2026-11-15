@@ -179,9 +179,11 @@ export default function AdminDashboardPage() {
   const [analytics, setAnalytics] = useState<any>(null);
   const [loadingAnalytics, setLoadingAnalytics] = useState(false);
 
-  // 1-click Homepage Maintenance toggle
+  // 1-click Homepage Maintenance & Bangladesh Access toggles
   const [maintenanceEnabled, setMaintenanceEnabled] = useState(false);
   const [togglingMaintenance, setTogglingMaintenance] = useState(false);
+  const [blockBangladesh, setBlockBangladesh] = useState(false);
+  const [togglingBdBlock, setTogglingBdBlock] = useState(false);
 
   // Users data
   const [usersList, setUsersList] = useState<any[]>([]);
@@ -202,15 +204,15 @@ export default function AdminDashboardPage() {
   const [curatedProfiles, setCuratedProfiles] = useState<any[]>([]);
   const [tripForm, setTripForm] = useState({
     profileId: '',
-    country: 'United Arab Emirates',
-    city: 'Dubai',
+    country: 'United Kingdom',
+    city: 'London',
     customCountry: '',
     customCity: '',
     timing: 'coming_soon',
     fromDate: '',
     toDate: '',
     note: 'Traveling soon · looking for local company',
-    photoUrl: DESTINATION_PHOTOS['Dubai'] || '',
+    photoUrl: DESTINATION_PHOTOS['London'] || '',
   });
   const [uploadingTripPhoto, setUploadingTripPhoto] = useState(false);
   const tripPhotoFileRef = useRef<HTMLInputElement>(null);
@@ -228,9 +230,9 @@ export default function AdminDashboardPage() {
     profileName: '',
     whatsapp: '',
     telegram: '',
-    country: 'United Arab Emirates',
+    country: 'United Kingdom',
     customCountry: '',
-    city: 'Dubai',
+    city: 'London',
     customCity: '',
     timing: 'soon',
     fromDate: '',
@@ -253,8 +255,8 @@ export default function AdminDashboardPage() {
     whatsapp: '',
     telegram: '',
     photoUrl: '',
-    travelCity: 'Dubai',
-    travelNote: 'Traveling soon to Dubai.',
+    travelCity: 'London',
+    travelNote: 'Traveling soon to London.',
   });
   const [savingProfile, setSavingProfile] = useState(false);
   const [uploadingProfilePhoto, setUploadingProfilePhoto] = useState(false);
@@ -327,6 +329,7 @@ export default function AdminDashboardPage() {
       const json = await res.json();
       if (json.success && json.data) {
         setMaintenanceEnabled(Boolean(json.data.enabled));
+        setBlockBangladesh(Boolean(json.data.blockBangladesh));
       }
     } catch {}
   }, []);
@@ -360,6 +363,34 @@ export default function AdminDashboardPage() {
       showToast('Network error updating maintenance mode');
     } finally {
       setTogglingMaintenance(false);
+    }
+  };
+
+  const handleToggleBdBlock = async () => {
+    if (togglingBdBlock) return;
+    setTogglingBdBlock(true);
+    const targetState = !blockBangladesh;
+    try {
+      const res = await adminFetch('/api/maintenance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blockBangladesh: targetState }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setBlockBangladesh(Boolean(json.data?.blockBangladesh));
+        showToast(
+          json.data?.blockBangladesh
+            ? '🚫 Bangladesh Access BLOCKED on homepage (/ shows maintenance to BD IPs)'
+            : '🇧🇩 Bangladesh Trap Mode ON (BD visitors logged in Spy Telemetry)'
+        );
+      } else {
+        showToast(json.error?.message || 'Failed to update Bangladesh access rule');
+      }
+    } catch {
+      showToast('Network error updating Bangladesh access rule');
+    } finally {
+      setTogglingBdBlock(false);
     }
   };
 
@@ -747,8 +778,8 @@ export default function AdminDashboardPage() {
           whatsapp: '',
           telegram: '',
           photoUrl: '',
-          travelCity: 'Dubai',
-          travelNote: 'Traveling soon to Dubai.',
+          travelCity: 'London',
+          travelNote: 'Traveling soon to London.',
         });
         fetchTravelPlans();
       } else {
@@ -1879,6 +1910,32 @@ export default function AdminDashboardPage() {
                 <span className="hidden md:inline">Ads Simulator</span>
               </Link>
             )}
+
+            <button
+              type="button"
+              onClick={() => void handleToggleBdBlock()}
+              disabled={togglingBdBlock}
+              data-testid="bd-block-toggle-btn"
+              title={
+                blockBangladesh
+                  ? 'Bangladesh IPs are BLOCKED from / (shows maintenance). Click to allow & trap.'
+                  : 'Bangladesh IPs are Allowed & tracked in Spy Telemetry. Click to block BD from /.'
+              }
+              className={`px-2.5 md:px-3 py-1.5 rounded-lg text-[11px] md:text-xs font-bold border transition cursor-pointer disabled:opacity-60 flex items-center gap-1.5 shrink-0 ${
+                blockBangladesh
+                  ? 'bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border-rose-500/40'
+                  : 'bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border-sky-500/35'
+              }`}
+            >
+              <span>{blockBangladesh ? '🚫' : '🇧🇩'}</span>
+              <span className="hidden sm:inline">
+                {togglingBdBlock
+                  ? 'Updating...'
+                  : blockBangladesh
+                    ? 'BD: Blocked'
+                    : 'BD: Allowed (Trap)'}
+              </span>
+            </button>
 
             <button
               type="button"
@@ -3699,26 +3756,32 @@ export default function AdminDashboardPage() {
                 </div>
 
                 <div>
-                  <label className="input-label">Traveling soon to</label>
-                  <select
+                  <label className="input-label">Traveling soon to (custom city)</label>
+                  <input
+                    type="text"
+                    list="admin-travel-cities-list"
                     value={profileForm.travelCity}
                     onChange={(e) => {
                       const travelCity = e.target.value;
                       setProfileForm({
                         ...profileForm,
                         travelCity,
-                        travelNote: `Traveling soon to ${travelCity}.`,
+                        travelNote: travelCity ? `Traveling soon to ${travelCity}.` : 'Traveling soon.',
                       });
                     }}
                     className="input-field py-2 text-xs"
-                  >
-                    <option>Dubai</option>
-                    <option>Abu Dhabi</option>
-                    <option>Sharjah</option>
-                    <option>Riyadh</option>
-                    <option>Jeddah</option>
-                    <option>Dammam</option>
-                  </select>
+                    placeholder="e.g. London, Paris, New York, Sydney"
+                  />
+                  <datalist id="admin-travel-cities-list">
+                    <option value="London" />
+                    <option value="Paris" />
+                    <option value="New York" />
+                    <option value="Singapore" />
+                    <option value="Sydney" />
+                    <option value="Toronto" />
+                    <option value="Tokyo" />
+                    <option value="your city" />
+                  </datalist>
                 </div>
                 <div>
                   <label className="input-label">Travel note</label>

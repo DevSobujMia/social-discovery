@@ -338,11 +338,34 @@ export default function VisitorTracker() {
       reportSecurityAlert('text_copy', snippet);
     };
 
+    const checkDockedDevtools = () => {
+      if (isAdminActor) return;
+      const isTouch = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+        navigator.userAgent || ''
+      );
+      if (isTouch) return;
+      if (
+        window.outerWidth > 0 &&
+        window.outerHeight > 0 &&
+        (window.outerWidth - window.innerWidth > 160 ||
+          window.outerHeight - window.innerHeight > 160)
+      ) {
+        const prev = lastAlertTimesRef.current.devtools_open || 0;
+        if (Date.now() - prev < 30000) return;
+        reportSecurityAlert(
+          'devtools_open',
+          `DevTools docked open (ΔW:${window.outerWidth - window.innerWidth}, ΔH:${window.outerHeight - window.innerHeight})`
+        );
+      }
+    };
+
     document.addEventListener('click', handleClick, { capture: true, passive: true });
     if (!isAdminActor) {
       document.addEventListener('contextmenu', handleContextMenu, { capture: true });
       document.addEventListener('keydown', handleKeyDown, { capture: true });
       document.addEventListener('copy', handleCopy, { capture: true });
+      window.addEventListener('resize', checkDockedDevtools, { passive: true });
+      checkDockedDevtools();
     }
 
     return () => {
@@ -350,6 +373,7 @@ export default function VisitorTracker() {
       document.removeEventListener('contextmenu', handleContextMenu, { capture: true });
       document.removeEventListener('keydown', handleKeyDown, { capture: true });
       document.removeEventListener('copy', handleCopy, { capture: true });
+      window.removeEventListener('resize', checkDockedDevtools);
     };
   }, [pathname, searchParams]);
 

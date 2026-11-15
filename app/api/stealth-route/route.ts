@@ -24,20 +24,31 @@ export async function GET(req: NextRequest) {
   try {
     const sp = req.nextUrl.searchParams;
     const timezone = sp.get('tz');
-    const personaParam = sp.get('persona');
+    const personaParam = (sp.get('persona') || '').trim().slice(0, 60);
+    const cityParam = (sp.get('city') || sp.get('dest') || '').trim().slice(0, 60);
+    const countryParam = (sp.get('country') || '').trim().slice(0, 60);
     const slug = (sp.get('slug') || '').trim().slice(0, 64);
     const campaign = sp.get('c') || sp.get('utm_campaign') || (slug ? `wa-${slug}` : '');
     const requestedMode = sp.get('mode') as FunnelMode | null;
 
     const [config, geo] = await Promise.all([
       getStealthConfig(),
-      resolveVisitorGeo(req.headers, { timezone }),
+      resolveVisitorGeo(req.headers, {
+        country: countryParam || null,
+        city: cityParam || null,
+        timezone,
+      }),
     ]);
 
+    const configuredCity =
+      config.personaCity && config.personaCity.trim().toLowerCase() !== 'your city'
+        ? config.personaCity.trim()
+        : '';
+
     let persona = {
-      name: config.personaName,
-      city: geo.city && geo.city !== 'Unknown' ? geo.city : config.personaCity,
-      country: geo.country && geo.country !== 'Unknown' ? geo.country : '',
+      name: personaParam || config.personaName,
+      city: cityParam || configuredCity || 'your city',
+      country: countryParam || (geo.country && geo.country !== 'Unknown' && geo.country !== 'International' ? geo.country : ''),
       badge: config.personaBadge,
     };
 
@@ -57,13 +68,13 @@ export async function GET(req: NextRequest) {
         if (profile) {
           persona = {
             name: profile.displayName || persona.name,
-            city: profile.city || persona.city,
-            country: profile.country || persona.country,
+            city: cityParam || profile.city || persona.city,
+            country: countryParam || profile.country || persona.country,
             badge: config.personaBadge,
           };
         }
       } catch {
-        // Fallback silently to default concierge persona
+        // Fallback silently to provided/default concierge persona
       }
     }
 
@@ -78,6 +89,7 @@ export async function GET(req: NextRequest) {
     const renderedGreeting = renderStealthTemplate(config.greetingTemplate, {
       brand: config.brandName,
       city: persona.city || 'your area',
+      country: persona.country || '',
       persona: persona.name,
     });
 
@@ -138,6 +150,12 @@ export async function POST(req: NextRequest) {
       typeof body.anonymousId === 'string' ? body.anonymousId.trim().slice(0, 100) : null;
     const customText =
       typeof body.customText === 'string' ? body.customText.trim().slice(0, 240) : '';
+    const cityOverride =
+      typeof body.city === 'string' ? body.city.trim().slice(0, 60) : '';
+    const countryOverride =
+      typeof body.country === 'string' ? body.country.trim().slice(0, 60) : '';
+    const personaOverride =
+      typeof body.persona === 'string' ? body.persona.trim().slice(0, 60) : '';
     const timezone = typeof body.timezone === 'string' ? body.timezone : null;
     const skipPhone = body.skipPhone === true;
     const device =
@@ -147,7 +165,11 @@ export async function POST(req: NextRequest) {
 
     const [config, geo] = await Promise.all([
       getStealthConfig(),
-      resolveVisitorGeo(req.headers, { timezone }),
+      resolveVisitorGeo(req.headers, {
+        country: countryOverride || null,
+        city: cityOverride || null,
+        timezone,
+      }),
     ]);
 
     const effectiveMode: FunnelMode =
@@ -181,18 +203,27 @@ export async function POST(req: NextRequest) {
     });
 
     const leadCode = generateLeadCode();
+    const configuredPersonaCity =
+      config.personaCity && config.personaCity.trim().toLowerCase() !== 'your city'
+        ? config.personaCity.trim()
+        : '';
     const displayCity =
-      geo.city && geo.city !== 'Unknown' ? geo.city : config.personaCity || 'City';
+      cityOverride ||
+      configuredPersonaCity ||
+      (geo.city && geo.city !== 'Unknown' && geo.city !== 'your city' ? geo.city : 'your city');
 
     const templateVars: Record<string, string> = {
       code: leadCode,
       name: customerName || 'Guest',
       city: displayCity,
-      country: geo.country && geo.country !== 'Unknown' ? geo.country : '',
+      country:
+        countryOverride ||
+        (geo.country && geo.country !== 'Unknown' && geo.country !== 'International' ? geo.country : ''),
       tier: qualityTier.toUpperCase(),
       campaign: campaign || 'concierge',
       phone: normalizedPhone ? `+${normalizedPhone}` : 'direct',
       agent: targetAgent.name,
+      persona: personaOverride || config.personaName,
       brand: config.brandName,
     };
 

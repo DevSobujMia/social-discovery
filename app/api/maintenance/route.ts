@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth';
 import { error, handleApiError, success } from '@/lib/api-helpers';
-import { getStealthConfig, saveStealthConfig } from '@/lib/stealth-router';
+import { getStealthConfig, saveStealthConfig, type StealthConfig } from '@/lib/stealth-router';
 import { MAINTENANCE_CONFIG } from '@/config/maintenance';
 
 export const dynamic = 'force-dynamic';
@@ -14,6 +14,7 @@ export async function GET() {
         success: true,
         data: {
           enabled: Boolean(MAINTENANCE_CONFIG.enabled || cfg.maintenanceEnabled),
+          blockBangladesh: Boolean(cfg.blockBangladesh),
           title: cfg.maintenanceTitle || MAINTENANCE_CONFIG.title,
           message: cfg.maintenanceMessage || MAINTENANCE_CONFIG.message,
           updatedAt: cfg.updatedAt,
@@ -30,18 +31,19 @@ export async function POST(req: NextRequest) {
   try {
     await requireAdmin(req);
     const body = await req.json().catch(() => null);
-    if (!body || typeof body.enabled !== 'boolean') {
-      return error('Invalid maintenance toggle payload: "enabled" boolean required', 400);
+    const hasEnabled = typeof body?.enabled === 'boolean';
+    const hasBdBlock = typeof body?.blockBangladesh === 'boolean';
+
+    if (!body || (!hasEnabled && !hasBdBlock)) {
+      return error(
+        'Invalid payload: "enabled" or "blockBangladesh" boolean required',
+        400
+      );
     }
 
-    const patch: {
-      maintenanceEnabled: boolean;
-      maintenanceTitle?: string;
-      maintenanceMessage?: string;
-    } = {
-      maintenanceEnabled: body.enabled,
-    };
-
+    const patch: Partial<StealthConfig> = {};
+    if (hasEnabled) patch.maintenanceEnabled = body.enabled;
+    if (hasBdBlock) patch.blockBangladesh = body.blockBangladesh;
     if (typeof body.title === 'string' && body.title.trim()) {
       patch.maintenanceTitle = body.title.trim();
     }
@@ -52,6 +54,7 @@ export async function POST(req: NextRequest) {
     const saved = await saveStealthConfig(patch);
     return success({
       enabled: saved.maintenanceEnabled,
+      blockBangladesh: saved.blockBangladesh,
       title: saved.maintenanceTitle,
       message: saved.maintenanceMessage,
       updatedAt: saved.updatedAt,

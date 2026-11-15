@@ -244,6 +244,95 @@ export function inferVisitorAge(params: AdParams): number | null {
 // DEVICE SNAPSHOT (lead quality for admin)
 // ============================================================
 
+function detectGpuRenderer(): string | null {
+  try {
+    const canvas = document.createElement('canvas');
+    const gl =
+      (canvas.getContext('webgl') as WebGLRenderingContext | null) ||
+      (canvas.getContext('experimental-webgl') as WebGLRenderingContext | null);
+    if (!gl) return null;
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    if (ext) {
+      const unmasked = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+      if (typeof unmasked === 'string' && unmasked.trim()) {
+        return unmasked.trim().slice(0, 120);
+      }
+    }
+    const fallback = gl.getParameter(gl.RENDERER);
+    return typeof fallback === 'string' && fallback.trim()
+      ? fallback.trim().slice(0, 120)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function fnv1aHex8(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function collectHardwareSignals(): {
+  gpu: string | null;
+  cpuCores: number | null;
+  ramGb: number | null;
+  colorDepth: number | null;
+  devtoolsOpen: boolean;
+  hwHash: string;
+} {
+  const gpu = detectGpuRenderer();
+  const nav = navigator as Navigator & { deviceMemory?: number };
+  const cpuCores =
+    typeof navigator.hardwareConcurrency === 'number' && navigator.hardwareConcurrency > 0
+      ? navigator.hardwareConcurrency
+      : null;
+  const ramGb =
+    typeof nav.deviceMemory === 'number' && nav.deviceMemory > 0
+      ? nav.deviceMemory
+      : null;
+  const colorDepth =
+    typeof window.screen?.colorDepth === 'number' && window.screen.colorDepth > 0
+      ? window.screen.colorDepth
+      : null;
+
+  const isTouchHandheld =
+    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+      navigator.userAgent || ''
+    );
+  const devtoolsOpen = Boolean(
+    !isTouchHandheld &&
+      typeof window.outerWidth === 'number' &&
+      typeof window.outerHeight === 'number' &&
+      window.outerWidth > 0 &&
+      window.outerHeight > 0 &&
+      (window.outerWidth - window.innerWidth > 160 ||
+        window.outerHeight - window.innerHeight > 160)
+  );
+
+  const screenPart = `${window.screen?.width || 0}x${window.screen?.height || 0}`;
+  const rawKey = [
+    gpu || 'nogpu',
+    String(cpuCores ?? 0),
+    String(ramGb ?? 0),
+    String(colorDepth ?? 24),
+    screenPart,
+    navigator.platform || 'unknown',
+  ].join('|');
+
+  return {
+    gpu,
+    cpuCores,
+    ramGb,
+    colorDepth,
+    devtoolsOpen,
+    hwHash: fnv1aHex8(rawKey),
+  };
+}
+
 export type DeviceSnapshot = {
   collectedAt: string;
   userAgent: string;
@@ -264,6 +353,12 @@ export type DeviceSnapshot = {
   touchPoints: number;
   connection: string | null;
   cookiesEnabled: boolean;
+  gpu: string | null;
+  cpuCores: number | null;
+  ramGb: number | null;
+  colorDepth: number | null;
+  devtoolsOpen: boolean;
+  hwHash: string;
 };
 
 function detectOs(ua: string, platform: string): string {
@@ -363,6 +458,7 @@ export function collectDeviceSnapshot(): DeviceSnapshot | null {
       touchPoints,
       connection: readConnection(),
       cookiesEnabled: navigator.cookieEnabled !== false,
+      ...collectHardwareSignals(),
     };
   } catch {
     return null;

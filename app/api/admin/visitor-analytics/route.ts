@@ -41,10 +41,36 @@ interface SecurityAlertFeedItem {
   spyScore?: number;
 }
 
+function extractIpSubnet(ip: string): string | null {
+  const clean = (ip || '').trim().replace(/^::ffff:/i, '');
+  if (!clean || clean === 'unknown' || clean === '127.0.0.1' || clean === '::1') {
+    return null;
+  }
+  const v4 = clean.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/);
+  if (v4) {
+    return `${v4[1]}.${v4[2]}.${v4[3]}.0/24`;
+  }
+  if (clean.includes(':')) {
+    const parts = clean.split(':').filter(Boolean);
+    if (parts.length >= 3) {
+      return `${parts.slice(0, 4).join(':')}::/64`;
+    }
+  }
+  return null;
+}
+
 function classifyVisitor(
   visitor: {
     visitorId: string;
     ip: string;
+    countryCode?: string;
+    timezone?: string | null;
+    gpu?: string | null;
+    cpuCores?: number | null;
+    ramGb?: number | null;
+    hwHash?: string | null;
+    ipSubnet?: string | null;
+    devtoolsOpen?: boolean;
     deviceType: string;
     utmCampaign: string | null;
     visitedPaths: string[];
@@ -85,6 +111,7 @@ function classifyVisitor(
 
   const adminProbes = visitor.securityAlerts.filter((a) => a.action === 'admin_probe').length;
   const devtoolsHits = visitor.securityAlerts.filter((a) => a.action === 'devtools_shortcut').length;
+  const devtoolsOpenHits = visitor.securityAlerts.filter((a) => a.action === 'devtools_open').length;
   const rightClickHits = visitor.securityAlerts.filter((a) => a.action === 'right_click').length;
   const copyHits = visitor.securityAlerts.filter((a) => a.action === 'text_copy').length;
 
@@ -95,6 +122,14 @@ function classifyVisitor(
   if (devtoolsHits > 0) {
     spyScore += Math.min(70, devtoolsHits * 35);
     spyReasons.push(`DevTools / View Source shortcut (${devtoolsHits}x)`);
+  }
+  if (devtoolsOpenHits > 0 || visitor.devtoolsOpen) {
+    spyScore += 45;
+    spyReasons.push(
+      devtoolsOpenHits > 0
+        ? `DevTools docked open (${devtoolsOpenHits}x)`
+        : 'Docked DevTools viewport signature detected'
+    );
   }
   if (rightClickHits > 0) {
     spyScore += Math.min(40, 20 + (rightClickHits - 1) * 10);
@@ -112,6 +147,18 @@ function classifyVisitor(
   ) {
     spyScore += 20;
     spyReasons.push('Desktop multi-page snooping (no ad UTM)');
+  }
+
+  const isClearedOrAdmin =
+    explicitRule?.role === 'admin' ||
+    explicitRule?.role === 'customer' ||
+    visitor.actorHint === 'admin';
+  if (
+    !isClearedOrAdmin &&
+    (visitor.countryCode === 'BD' || visitor.timezone === 'Asia/Dhaka')
+  ) {
+    spyScore += 50;
+    spyReasons.push('Local Bangladesh access (non-admin)');
   }
 
   let actorRole: ActorRole = 'customer';
@@ -235,6 +282,15 @@ export async function GET(req: NextRequest) {
       screen: string;
       viewport: string;
       isInAppBrowser: boolean;
+      timezone: string | null;
+      gpu: string | null;
+      cpuCores: number | null;
+      ramGb: number | null;
+      colorDepth: number | null;
+      hwHash: string | null;
+      ipSubnet: string | null;
+      devtoolsOpen: boolean;
+      crossDeviceMatch: string | null;
       landingPage: string;
       referrer: string;
       utmCampaign: string | null;
@@ -283,9 +339,9 @@ export async function GET(req: NextRequest) {
     for (const ev of events) {
       const data: any = ev.eventData || {};
       const vid = ev.anonymousId || data.visitorId || (ev.userId ? `u_${ev.userId}` : `unknown_${ev.id}`);
-      const country = data.country || 'Saudi Arabia';
-      const countryCode = (data.countryCode || 'SA').toUpperCase();
-      const city = data.city || 'Riyadh';
+      const country = data.country || 'International';
+      const countryCode = (data.countryCode || 'UN').toUpperCase();
+      const city = data.city || 'Global';
       const flag = data.flag || getCountryFlag(countryCode);
       const ip = data.ip || '127.0.0.1';
 
@@ -332,6 +388,18 @@ export async function GET(req: NextRequest) {
       const bName = isInApp ? `${browser} (In-App)` : browser;
       browserMap.set(bName, (browserMap.get(bName) || 0) + 1);
 
+      const timezone =
+        typeof data.timezone === 'string' && data.timezone.trim() ? data.timezone.trim() : null;
+      const gpu = typeof dev.gpu === 'string' && dev.gpu.trim() ? dev.gpu.trim() : null;
+      const cpuCores =
+        typeof dev.cpuCores === 'number' && dev.cpuCores > 0 ? dev.cpuCores : null;
+      const ramGb = typeof dev.ramGb === 'number' && dev.ramGb > 0 ? dev.ramGb : null;
+      const colorDepth =
+        typeof dev.colorDepth === 'number' && dev.colorDepth > 0 ? dev.colorDepth : null;
+      const hwHash = typeof dev.hwHash === 'string' && dev.hwHash.trim() ? dev.hwHash.trim() : null;
+      const devtoolsOpen = Boolean(dev.devtoolsOpen);
+      const ipSubnet = extractIpSubnet(ip);
+
       // Visitor aggregation
       let visitor = visitorMap.get(vid);
       if (!visitor) {
@@ -352,6 +420,15 @@ export async function GET(req: NextRequest) {
           screen: data.screen || '390×844',
           viewport: data.viewport || '390×740',
           isInAppBrowser: isInApp,
+          timezone,
+          gpu,
+          cpuCores,
+          ramGb,
+          colorDepth,
+          hwHash,
+          ipSubnet,
+          devtoolsOpen,
+          crossDeviceMatch: null,
           landingPage: data.url || data.path || '/',
           referrer: data.referrer || 'Direct / Ads',
           utmCampaign: ev.utmCampaign || null,
@@ -373,6 +450,15 @@ export async function GET(req: NextRequest) {
           isExplicitlyTagged: false,
         };
         visitorMap.set(vid, visitor);
+      } else {
+        if (!visitor.timezone && timezone) visitor.timezone = timezone;
+        if (!visitor.gpu && gpu) visitor.gpu = gpu;
+        if (!visitor.cpuCores && cpuCores) visitor.cpuCores = cpuCores;
+        if (!visitor.ramGb && ramGb) visitor.ramGb = ramGb;
+        if (!visitor.colorDepth && colorDepth) visitor.colorDepth = colorDepth;
+        if (!visitor.hwHash && hwHash) visitor.hwHash = hwHash;
+        if (!visitor.ipSubnet && ipSubnet) visitor.ipSubnet = ipSubnet;
+        if (devtoolsOpen) visitor.devtoolsOpen = true;
       }
 
       const rawPath =
@@ -532,6 +618,76 @@ export async function GET(req: NextRequest) {
       v.isExplicitlyTagged = classification.isExplicitlyTagged;
     }
 
+    // Second pass: Correlate Home-PC hardware hash & /24 network subnets across browsers/devices
+    const flaggedHwHashes = new Map<string, Array<{ visitorId: string | null; label: string }>>();
+    const flaggedSubnets = new Map<string, Array<{ visitorId: string | null; label: string }>>();
+
+    for (const rule of stealthConfig.knownActors || []) {
+      if ((rule.role === 'agent' || rule.role === 'spy') && rule.matchType === 'ip') {
+        const sub = extractIpSubnet(rule.value);
+        if (sub) {
+          const list = flaggedSubnets.get(sub) || [];
+          list.push({ visitorId: null, label: rule.agentName || rule.label || rule.value });
+          flaggedSubnets.set(sub, list);
+        }
+      }
+    }
+
+    const hasDistinctHardware = (v: {
+      gpu: string | null;
+      cpuCores: number | null;
+      ramGb: number | null;
+    }) => Boolean(v.gpu || (v.cpuCores && v.ramGb));
+
+    for (const v of visitorMap.values()) {
+      if (v.actorRole !== 'agent' && v.actorRole !== 'spy') continue;
+      const sourceLabel = v.linkedAgentName || v.actorLabel;
+      if (v.hwHash && hasDistinctHardware(v)) {
+        const list = flaggedHwHashes.get(v.hwHash) || [];
+        list.push({ visitorId: v.visitorId, label: sourceLabel });
+        flaggedHwHashes.set(v.hwHash, list);
+      }
+      if (v.ipSubnet) {
+        const list = flaggedSubnets.get(v.ipSubnet) || [];
+        list.push({ visitorId: v.visitorId, label: sourceLabel });
+        flaggedSubnets.set(v.ipSubnet, list);
+      }
+    }
+
+    for (const v of visitorMap.values()) {
+      if (v.actorRole === 'admin' || (v.isExplicitlyTagged && v.actorRole === 'customer')) {
+        continue;
+      }
+      const hwMatch =
+        v.hwHash && hasDistinctHardware(v)
+          ? (flaggedHwHashes.get(v.hwHash) || []).find((m) => m.visitorId !== v.visitorId)
+          : undefined;
+      const subnetMatch = v.ipSubnet
+        ? (flaggedSubnets.get(v.ipSubnet) || []).find((m) => m.visitorId !== v.visitorId)
+        : undefined;
+
+      if (hwMatch || subnetMatch) {
+        const matchLabel = hwMatch?.label || subnetMatch?.label || 'Flagged Agent';
+        const matchText =
+          hwMatch && subnetMatch
+            ? `Same PC HW (${v.hwHash}) & ISP Subnet (${v.ipSubnet}) as ${matchLabel}`
+            : hwMatch
+              ? `Same PC Hardware (${v.hwHash}) as ${matchLabel}`
+              : `Same Network Subnet (${v.ipSubnet}) as ${matchLabel}`;
+
+        v.crossDeviceMatch = matchText;
+        v.spyScore += 40;
+        v.spyReasons.push(matchText);
+
+        if (v.spyScore >= 40 && v.actorRole !== 'spy') {
+          v.actorRole = 'spy';
+          v.actorLabel = v.linkedAgentName
+            ? `Spy (${v.linkedAgentName})`
+            : `Linked Spy (${matchLabel})`;
+        }
+      }
+    }
+
     for (const alertItem of securityAlertsFeed) {
       const v = visitorMap.get(alertItem.visitorId);
       if (v) {
@@ -554,6 +710,9 @@ export async function GET(req: NextRequest) {
         v.os.toLowerCase().includes(search) ||
         v.browser.toLowerCase().includes(search) ||
         v.actorLabel.toLowerCase().includes(search) ||
+        (v.hwHash && v.hwHash.toLowerCase().includes(search)) ||
+        (v.gpu && v.gpu.toLowerCase().includes(search)) ||
+        (v.ipSubnet && v.ipSubnet.toLowerCase().includes(search)) ||
         (v.linkedAgentName && v.linkedAgentName.toLowerCase().includes(search)) ||
         (v.utmCampaign && v.utmCampaign.toLowerCase().includes(search)) ||
         v.clicks.some((c) => c.targetText.toLowerCase().includes(search) || c.section.toLowerCase().includes(search))
@@ -633,8 +792,8 @@ export async function GET(req: NextRequest) {
     ).size;
     const todayClicks = todayEvents.filter((e) => e.eventType === 'click').length;
 
-    const topCountry = countries[0] || { country: 'Saudi Arabia', countryCode: 'SA', flag: '🇸🇦', count: 0, percentage: 100 };
-    const topCity = cities[0] || { city: 'Riyadh', country: 'Saudi Arabia', count: 0 };
+    const topCountry = countries[0] || { country: 'International', countryCode: 'UN', flag: '🌐', count: 0, percentage: 100 };
+    const topCity = cities[0] || { city: 'Global', country: 'International', count: 0 };
 
     return success({
       range,

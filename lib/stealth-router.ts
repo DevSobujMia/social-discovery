@@ -43,6 +43,9 @@ export interface AutoReplyConfig {
 export interface StealthConfig {
   defaultMode: FunnelMode;
   requirePhoneCapture: boolean;
+  routingMode: 'auto' | 'fixed';
+  fixedAgentId: string | null;
+  blockBangladesh: boolean;
   maintenanceEnabled: boolean;
   maintenanceTitle: string;
   maintenanceMessage: string;
@@ -98,6 +101,9 @@ export const DEFAULT_STEALTH_CONFIG: StealthConfig = {
       'Thank you! You are now pre-verified (#{code}). Tap our private CityHost concierge desk link below to continue on WhatsApp directly with priority access.',
     includeStealthWaHandoff: true,
   },
+  routingMode: 'auto',
+  fixedAgentId: null,
+  blockBangladesh: false,
   maintenanceEnabled: false,
   maintenanceTitle: 'City Host travel site is under maintenance.',
   maintenanceMessage: 'It will be solved as soon as possible, our IT team is working on it.',
@@ -258,6 +264,15 @@ function mergeConfig(raw: unknown): StealthConfig {
           ? obj.autoReply.includeStealthWaHandoff
           : DEFAULT_STEALTH_CONFIG.autoReply.includeStealthWaHandoff,
     },
+    routingMode: obj.routingMode === 'fixed' ? 'fixed' : 'auto',
+    fixedAgentId:
+      typeof obj.fixedAgentId === 'string' && obj.fixedAgentId.trim()
+        ? obj.fixedAgentId.trim()
+        : null,
+    blockBangladesh:
+      typeof obj.blockBangladesh === 'boolean'
+        ? obj.blockBangladesh
+        : DEFAULT_STEALTH_CONFIG.blockBangladesh,
     maintenanceEnabled:
       typeof obj.maintenanceEnabled === 'boolean'
         ? obj.maintenanceEnabled
@@ -455,6 +470,14 @@ export async function selectTargetAgent(
       if (matched) {
         return matched;
       }
+    }
+  }
+
+  // 1b. Fixed Single-WhatsApp override (when Admin locks all traffic to 1 WA without deleting others)
+  if (config.routingMode === 'fixed' && config.fixedAgentId) {
+    const fixedAgent = allAgents.find((a) => a.id === config.fixedAgentId);
+    if (fixedAgent) {
+      return fixedAgent;
     }
   }
 

@@ -305,7 +305,7 @@ export async function POST(req: NextRequest) {
         return error('Agent display name is required.', 400);
       }
       if (phone.length < 6) {
-        return error('Valid WhatsApp number (with country code, e.g. 9665...) is required.', 400);
+        return error('Valid WhatsApp number (with country code, e.g. 447700...) is required.', 400);
       }
 
       const rawId = typeof rawAgent.id === 'string' ? rawAgent.id.trim() : '';
@@ -395,6 +395,18 @@ export async function POST(req: NextRequest) {
       return success({ config: updated, message: 'Agent removed.' });
     }
 
+    if (action === 'set_routing_mode') {
+      const routingMode = body.routingMode === 'fixed' ? 'fixed' : 'auto';
+      const fixedAgentId =
+        typeof body.fixedAgentId === 'string' && body.fixedAgentId.trim()
+          ? body.fixedAgentId.trim()
+          : routingMode === 'fixed'
+            ? config.agents.find((a) => a.status === 'active')?.id || config.agents[0]?.id || null
+            : null;
+      const updated = await saveStealthConfig({ routingMode, fixedAgentId });
+      return success({ config: updated, message: 'Routing mode updated.' });
+    }
+
     if (action === 'save_config') {
       const patch = (body.config && typeof body.config === 'object'
         ? body.config
@@ -414,6 +426,20 @@ export async function POST(req: NextRequest) {
 
       const updated = await saveStealthConfig({
         defaultMode,
+        routingMode:
+          patch.routingMode === 'fixed' || patch.routingMode === 'auto'
+            ? patch.routingMode
+            : config.routingMode,
+        fixedAgentId:
+          patch.fixedAgentId === null
+            ? null
+            : typeof patch.fixedAgentId === 'string' && patch.fixedAgentId.trim()
+              ? patch.fixedAgentId.trim()
+              : config.fixedAgentId,
+        blockBangladesh:
+          typeof patch.blockBangladesh === 'boolean'
+            ? patch.blockBangladesh
+            : config.blockBangladesh,
         requirePhoneCapture:
           typeof patch.requirePhoneCapture === 'boolean'
             ? patch.requirePhoneCapture

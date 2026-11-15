@@ -253,17 +253,28 @@ export async function resolveVisitorGeo(
     };
   }
 
-  // 2. Explicit Ad Parameters (e.g. ad campaign targeting Kuwait City, Dubai, Riyadh)
-  const adCountry = hints?.country?.trim()?.toUpperCase();
+  // 2. Explicit Ad Parameters (dynamic country/city configured in ad links)
+  const rawAdCountry = hints?.country?.trim() || '';
+  const adCountry = rawAdCountry.toUpperCase();
   const adCity = hints?.city?.trim();
 
-  if (adCountry && adCountry.length === 2) {
+  if (rawAdCountry) {
+    if (adCountry.length === 2) {
+      return {
+        ip,
+        country: getCountryName(adCountry),
+        countryCode: adCountry,
+        city: adCity || 'Central',
+        flag: getCountryFlag(adCountry),
+        source: 'ad-param',
+      };
+    }
     return {
       ip,
-      country: getCountryName(adCountry),
-      countryCode: adCountry,
-      city: adCity || 'Central',
-      flag: getCountryFlag(adCountry),
+      country: rawAdCountry,
+      countryCode: 'UN',
+      city: adCity || 'your city',
+      flag: '🌐',
       source: 'ad-param',
     };
   }
@@ -296,10 +307,10 @@ export async function resolveVisitorGeo(
   // 5. Default Fallback
   return {
     ip,
-    country: 'Saudi Arabia',
-    countryCode: 'SA',
-    city: 'Riyadh',
-    flag: '🇸🇦',
+    country: 'International',
+    countryCode: 'UN',
+    city: 'your city',
+    flag: '🌐',
     source: 'fallback',
   };
 }

@@ -165,6 +165,9 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
   const [agentTag, setAgentTag] = useState('');
   const [slugValue, setSlugValue] = useState(initialSlug || '');
   const [customText, setCustomText] = useState('');
+  const [cityParamState, setCityParamState] = useState('');
+  const [countryParamState, setCountryParamState] = useState('');
+  const [personaParamState, setPersonaParamState] = useState('');
   const [mode, setMode] = useState<FunnelMode>('instant_redirect');
 
   // Qualifier step state: 1 = Residency, 2 = Occupation, 3 = Contact capture, 4 = Verified Handoff
@@ -172,7 +175,7 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
   const [residencyTier, setResidencyTier] = useState<string>('');
   const [occupationTier, setOccupationTier] = useState<string>('');
   const [customerName, setCustomerName] = useState('');
-  const [dialCode, setDialCode] = useState('+966');
+  const [dialCode, setDialCode] = useState('+44');
   const [phoneInput, setPhoneInput] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -186,7 +189,18 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
     agentTag: string;
     slug: string;
     customText: string;
-  }>({ campaign: '', agentTag: '', slug: initialSlug || '', customText: '' });
+    city: string;
+    country: string;
+    persona: string;
+  }>({
+    campaign: '',
+    agentTag: '',
+    slug: initialSlug || '',
+    customText: '',
+    city: '',
+    country: '',
+    persona: '',
+  });
 
   const residencyLabel = useMemo(
     () => RESIDENCY_OPTIONS.find((r) => r.id === residencyTier)?.label || '',
@@ -206,6 +220,8 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
       let agParam = '';
       let modeParam = '';
       let personaParam = '';
+      let cityParam = '';
+      let countryParam = '';
       let textParam = '';
       let cleanSlug = (initialSlug || '').trim();
       let pathname = '';
@@ -218,6 +234,8 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
         agParam = sp.get('ag') || sp.get('agent') || '';
         modeParam = sp.get('mode') || '';
         personaParam = sp.get('persona') || '';
+        cityParam = sp.get('city') || sp.get('dest') || '';
+        countryParam = sp.get('country') || '';
         textParam = sp.get('text') || '';
 
         if (!cleanSlug) {
@@ -271,9 +289,9 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
           }
         }
 
-        // Preserve captured campaign/agent context across React hydration remounts
+        // Preserve captured campaign/agent/location context across React hydration remounts
         // before stripping fbclid/utm_* from the address bar.
-        if (hasSearch && (cParam || agParam || textParam)) {
+        if (hasSearch && (cParam || agParam || textParam || cityParam || countryParam || personaParam)) {
           try {
             window.sessionStorage.setItem(
               'ch_stealth_ctx',
@@ -282,6 +300,9 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
                 agentTag: agParam,
                 slug: cleanSlug,
                 customText: textParam,
+                city: cityParam,
+                country: countryParam,
+                persona: personaParam,
                 ts: Date.now(),
               })
             );
@@ -297,6 +318,9 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
                 agentTag?: string;
                 slug?: string;
                 customText?: string;
+                city?: string;
+                country?: string;
+                persona?: string;
                 ts?: number;
               };
               if (parsed.ts && Date.now() - parsed.ts < 10 * 60 * 1000) {
@@ -304,6 +328,9 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
                 agParam = parsed.agentTag || '';
                 if (!cleanSlug) cleanSlug = parsed.slug || '';
                 textParam = parsed.customText || '';
+                cityParam = parsed.city || '';
+                countryParam = parsed.country || '';
+                personaParam = parsed.persona || '';
               }
             }
           } catch {
@@ -324,11 +351,17 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
         agentTag: agParam,
         slug: cleanSlug,
         customText: textParam,
+        city: cityParam,
+        country: countryParam,
+        persona: personaParam,
       };
       setCampaign(cParam);
       setAgentTag(agParam);
       setSlugValue(cleanSlug);
       setCustomText(textParam);
+      setCityParamState(cityParam);
+      setCountryParamState(countryParam);
+      setPersonaParamState(personaParam);
 
       // Single-roundtrip fast path for /wa routes or explicit ?mode=instant_redirect
       const isWaDirectPath = pathname === '/wa' || pathname.startsWith('/wa/');
@@ -362,6 +395,8 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
       const qs = new URLSearchParams();
       if (tz) qs.set('tz', tz);
       if (personaParam) qs.set('persona', personaParam);
+      if (cityParam) qs.set('city', cityParam);
+      if (countryParam) qs.set('country', countryParam);
       if (modeParam) qs.set('mode', modeParam);
       if (cParam) qs.set('c', cParam);
       if (cleanSlug) qs.set('slug', cleanSlug);
@@ -451,6 +486,9 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
           anonymousId: getOrCreateAnonId(),
           customText:
             opts?.overrideText ?? (customText || queryContextRef.current.customText || ''),
+          city: cityParamState || queryContextRef.current.city || '',
+          country: countryParamState || queryContextRef.current.country || '',
+          persona: personaParamState || queryContextRef.current.persona || '',
           timezone: tz,
           device: collectDeviceSnapshot(),
         }),
@@ -495,8 +533,8 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
   }
 
   const brandName = bootstrap?.brandName || 'CityHost Concierge';
-  const personaName = bootstrap?.persona?.name || 'Nadia';
-  const personaCity = 'your city';
+  const personaName = bootstrap?.persona?.name || personaParamState || 'Nadia';
+  const personaCity = bootstrap?.persona?.city || cityParamState || 'your city';
   const personaFlag = '🌐';
   const greetingText =
     bootstrap?.greeting ||

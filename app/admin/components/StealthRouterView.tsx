@@ -168,6 +168,9 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
   const [builderCampaign, setBuilderCampaign] = useState('');
   const [builderAgentPin, setBuilderAgentPin] = useState('');
   const [builderMode, setBuilderMode] = useState<'' | FunnelMode>('');
+  const [builderCity, setBuilderCity] = useState('');
+  const [builderCountry, setBuilderCountry] = useState('');
+  const [builderPersona, setBuilderPersona] = useState('');
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedQuickKey, setCopiedQuickKey] = useState('');
   const [copiedTrapId, setCopiedTrapId] = useState('');
@@ -231,11 +234,22 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
           builderPath === '/whatsapp'
             ? `${originUrl}${builderPath}?ag=${encodeURIComponent(pathSlug)}`
             : `${originUrl}${builderPath}/${pathSlug}`;
+        const extra = new URLSearchParams();
         if (cleanCampaignSlug && builderPath !== '/whatsapp') {
-          return `${base}?c=${encodeURIComponent(cleanCampaignSlug)}`;
+          extra.set('c', cleanCampaignSlug);
+        }
+        if (builderCity.trim()) extra.set('city', builderCity.trim());
+        if (builderCountry.trim()) extra.set('country', builderCountry.trim());
+        if (builderPersona.trim()) extra.set('persona', builderPersona.trim());
+        const extraQs = extra.toString();
+        if (extraQs) {
+          return `${base}${base.includes('?') ? '&' : '?'}${extraQs}`;
         }
         return base;
       }
+    }
+
+    if (!builderMode && !builderCity.trim() && !builderCountry.trim() && !builderPersona.trim()) {
 
       if (cleanCampaignSlug && builderPath !== '/whatsapp') {
         return `${originUrl}${builderPath}/${cleanCampaignSlug}`;
@@ -250,9 +264,22 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
     if (builderCampaign.trim()) params.set('c', builderCampaign.trim());
     if (builderAgentPin) params.set('ag', builderAgentPin);
     if (builderMode) params.set('mode', builderMode);
+    if (builderCity.trim()) params.set('city', builderCity.trim());
+    if (builderCountry.trim()) params.set('country', builderCountry.trim());
+    if (builderPersona.trim()) params.set('persona', builderPersona.trim());
     const qs = params.toString();
     return `${originUrl}${builderPath}${qs ? `?${qs}` : ''}`;
-  }, [originUrl, builderPath, builderCampaign, builderAgentPin, builderMode, agentStats]);
+  }, [
+    originUrl,
+    builderPath,
+    builderCampaign,
+    builderAgentPin,
+    builderMode,
+    builderCity,
+    builderCountry,
+    builderPersona,
+    agentStats,
+  ]);
 
   async function handleSaveAgent(e: React.FormEvent) {
     e.preventDefault();
@@ -360,6 +387,64 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
     } finally {
       setSaving(false);
     }
+  }
+
+  async function handleSetRoutingMode(
+    nextMode: 'auto' | 'fixed',
+    nextFixedAgentId?: string | null
+  ) {
+    setSaving(true);
+    try {
+      const targetFixedId =
+        nextMode === 'fixed'
+          ? nextFixedAgentId ?? config?.fixedAgentId ?? agentStats[0]?.id ?? null
+          : config?.fixedAgentId ?? null;
+      const res = await adminFetch('/api/admin/stealth-router', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'set_routing_mode',
+          routingMode: nextMode,
+          fixedAgentId: targetFixedId,
+        }),
+      });
+      const json = await res.json();
+      if (res.ok && json?.success) {
+        if (json.data?.config) {
+          setConfig(json.data.config);
+        }
+        showBanner(
+          'ok',
+          nextMode === 'fixed'
+            ? 'Routing locked to Fixed Single WhatsApp mode.'
+            : 'Switched to Auto-Dynamic weighted WhatsApp rotation.'
+        );
+        await loadData();
+      } else {
+        showBanner('err', json?.error || 'Failed to update routing mode.');
+      }
+    } catch {
+      showBanner('err', 'Network error while updating routing mode.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function openCloneAgentModal(agent: AgentStatRow) {
+    setAgentForm({
+      id: '',
+      name: `${agent.name} (WA #2)`,
+      phone: '',
+      roleLabel: agent.roleLabel,
+      weight: agent.weight,
+      qualityTier: agent.qualityTier,
+      maxDailyLeads: agent.maxDailyLeads ? String(agent.maxDailyLeads) : '',
+      status: 'active',
+      notes: agent.notes
+        ? `${agent.notes} | 2nd WA of ${agent.name}`
+        : `2nd WA number for ${agent.name}`,
+    });
+    setAgentModalOpen(true);
   }
 
   function openEditModal(agent: AgentStatRow) {
@@ -552,6 +637,62 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
             </button>
           </div>
 
+          {/* Routing Mode Bar: Auto-Dynamic Rotation vs Fixed Single WhatsApp */}
+          <div className="glass-card p-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3 border border-surface-700/70">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-surface-400 mr-1">
+                Routing Mode:
+              </span>
+              <button
+                type="button"
+                data-testid="routing-mode-auto-btn"
+                disabled={saving}
+                onClick={() => void handleSetRoutingMode('auto')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer disabled:opacity-50 ${
+                  config?.routingMode !== 'fixed'
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    : 'bg-surface-900 text-surface-400 border-surface-700 hover:text-white'
+                }`}
+              >
+                🔄 Auto-Dynamic Rotation
+              </button>
+              <button
+                type="button"
+                data-testid="routing-mode-fixed-btn"
+                disabled={saving || agentStats.length === 0}
+                onClick={() => void handleSetRoutingMode('fixed')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer disabled:opacity-50 ${
+                  config?.routingMode === 'fixed'
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                    : 'bg-surface-900 text-surface-400 border-surface-700 hover:text-white'
+                }`}
+              >
+                📌 Fixed Single WhatsApp
+              </button>
+            </div>
+
+            {config?.routingMode === 'fixed' && (
+              <div className="flex items-center gap-2">
+                <label className="text-[11px] font-semibold text-amber-300 whitespace-nowrap">
+                  Locked Target WA:
+                </label>
+                <select
+                  data-testid="fixed-agent-select"
+                  disabled={saving}
+                  value={config.fixedAgentId || agentStats[0]?.id || ''}
+                  onChange={(e) => void handleSetRoutingMode('fixed', e.target.value)}
+                  className="input-field py-1.5 px-2.5 text-xs min-w-[200px]"
+                >
+                  {agentStats.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} (+{a.phone})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
           <div className="glass-card overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
@@ -626,7 +767,43 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                         </span>
                       </td>
                       <td className="py-3.5 px-4">
-                        <div className="flex items-center justify-end gap-1.5">
+                        <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                          {(() => {
+                            const isPinned =
+                              config?.routingMode === 'fixed' && config?.fixedAgentId === agent.id;
+                            return (
+                              <button
+                                type="button"
+                                disabled={saving}
+                                onClick={() =>
+                                  void handleSetRoutingMode(
+                                    isPinned ? 'auto' : 'fixed',
+                                    agent.id
+                                  )
+                                }
+                                title={
+                                  isPinned
+                                    ? 'Pinned as Fixed Single WhatsApp — click to resume Auto-Dynamic'
+                                    : `Lock ALL traffic exclusively to ${agent.name}`
+                                }
+                                className={`px-2 py-1.5 rounded-lg border text-[10px] font-bold transition cursor-pointer disabled:opacity-40 whitespace-nowrap ${
+                                  isPinned
+                                    ? 'bg-amber-500/25 border-amber-500/50 text-amber-200'
+                                    : 'bg-surface-800 border-surface-700 text-surface-300 hover:text-white'
+                                }`}
+                              >
+                                {isPinned ? '📌 Pinned' : 'Pin Fixed'}
+                              </button>
+                            );
+                          })()}
+                          <button
+                            type="button"
+                            onClick={() => openCloneAgentModal(agent)}
+                            title={`Add a 2nd WhatsApp number for ${agent.name}`}
+                            className="px-2 py-1.5 rounded-lg border bg-indigo-500/10 border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/20 text-[10px] font-bold transition cursor-pointer whitespace-nowrap"
+                          >
+                            +2nd WA
+                          </button>
                           <button
                             type="button"
                             onClick={() => {
@@ -890,7 +1067,7 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                   type="text"
                   value={builderCampaign}
                   onChange={(e) => setBuilderCampaign(e.target.value)}
-                  placeholder="Optional (e.g. riyadh_vip)"
+                  placeholder="Optional (e.g. london_vip)"
                   className="input-field w-full text-xs"
                 />
               </div>
@@ -911,6 +1088,47 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                     </option>
                   ))}
                 </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-surface-300 mb-1">
+                  Ad City / Location Override (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={builderCity}
+                  onChange={(e) => setBuilderCity(e.target.value)}
+                  placeholder="e.g. London, Paris, Toronto"
+                  className="input-field w-full text-xs"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-surface-300 mb-1">
+                  Ad Country Override (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={builderCountry}
+                  onChange={(e) => setBuilderCountry(e.target.value)}
+                  placeholder="e.g. United Kingdom, Canada"
+                  className="input-field w-full text-xs"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-surface-300 mb-1">
+                  Persona / Host Name (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={builderPersona}
+                  onChange={(e) => setBuilderPersona(e.target.value)}
+                  placeholder="e.g. Elena, Maya, Sophia"
+                  className="input-field w-full text-xs"
+                />
               </div>
             </div>
 
@@ -1021,7 +1239,7 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                 Agent Receives This Clean WhatsApp Message:
               </div>
               <div className="p-3 rounded-xl bg-surface-950/80 border border-surface-800 text-xs text-surface-100 font-mono leading-relaxed">
-                Hi, I am connecting from CityHost (Riyadh) — Verified Pass #CH-4829A
+                Hi, I am connecting from CityHost (London) — Verified Pass #CH-4829A
               </div>
               <p className="text-[11px] text-emerald-200/80">
                 Notice: No Facebook ad image card, no &ldquo;From Facebook Ad&rdquo; badge, and the agent believes the customer came organically from CityHost!
@@ -1392,7 +1610,7 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                   required
                   value={agentForm.phone}
                   onChange={(e) => setAgentForm({ ...agentForm, phone: e.target.value })}
-                  placeholder="e.g. 966501234567"
+                  placeholder="e.g. 447700900123"
                   className="input-field w-full text-xs font-mono"
                 />
               </div>

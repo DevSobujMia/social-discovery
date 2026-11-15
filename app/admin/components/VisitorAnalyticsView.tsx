@@ -300,13 +300,13 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
         <div className="glass-card p-4">
           <p className="text-[11px] text-surface-400 font-medium">Top Visitor Location</p>
           <div className="flex items-center gap-2 mt-1">
-            <span className="text-2xl">{summary.topCountry?.flag || '🇸🇦'}</span>
+            <span className="text-2xl">{summary.topCountry?.flag || '🌐'}</span>
             <div className="min-w-0">
               <p className="text-base font-extrabold text-white truncate">
-                {summary.topCountry?.country || 'Saudi Arabia'}
+                {summary.topCountry?.country || 'International'}
               </p>
               <p className="text-[10px] text-surface-400 truncate">
-                {summary.topCity?.city || 'Riyadh'} ({summary.topCountry?.percentage || 0}%)
+                {summary.topCity?.city || 'Global'} ({summary.topCountry?.percentage || 0}%)
               </p>
             </div>
           </div>
@@ -524,6 +524,15 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
                     </div>
                   </div>
 
+                  {/* Cross-Device / Home-PC Correlation Alert */}
+                  {v.crossDeviceMatch && (
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-amber-500/15 border border-amber-500/35 text-[11px] text-amber-200 flex-wrap">
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span className="font-bold text-amber-300">Home-PC / Cross-Device Match:</span>
+                      <span>{v.crossDeviceMatch}</span>
+                    </div>
+                  )}
+
                   {/* Spy Reasons Warning Bar */}
                   {Array.isArray(v.spyReasons) && v.spyReasons.length > 0 && (
                     <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-rose-500/15 border border-rose-500/30 text-[11px] text-rose-200 flex-wrap">
@@ -546,6 +555,34 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
                       <span className="text-surface-300 font-medium">Browser: {v.browser}</span>
                       <span>•</span>
                       <span className="text-surface-400">Screen: {v.screen}</span>
+                      {v.hwHash && (
+                        <>
+                          <span>•</span>
+                          <span className="font-mono text-amber-300 font-semibold" title="Hardware Fingerprint Hash">
+                            HW: {v.hwHash}
+                          </span>
+                        </>
+                      )}
+                      {v.cpuCores && (
+                        <>
+                          <span>•</span>
+                          <span className="text-surface-300">CPU: {v.cpuCores}c</span>
+                        </>
+                      )}
+                      {v.ramGb && (
+                        <>
+                          <span>•</span>
+                          <span className="text-surface-300">RAM: {v.ramGb}GB</span>
+                        </>
+                      )}
+                      {v.gpu && (
+                        <>
+                          <span>•</span>
+                          <span className="text-surface-400 truncate max-w-[220px]" title={v.gpu}>
+                            GPU: {v.gpu}
+                          </span>
+                        </>
+                      )}
                       {v.landingPage && (
                         <>
                           <span>•</span>
