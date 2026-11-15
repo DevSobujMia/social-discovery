@@ -849,7 +849,22 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-surface-800/70 text-xs">
-                  {agentStats.map((agent, idx) => (
+                  {agentStats.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-10 px-4 text-center">
+                        <div className="max-w-md mx-auto space-y-2.5">
+                          <div className="text-sm font-bold text-white">
+                            No Agent WhatsApp Numbers Added Yet
+                          </div>
+                          <p className="text-xs text-surface-400">
+                            All hardcoded/demo numbers have been removed. Click{' '}
+                            <strong className="text-emerald-300">+ Add Agent Number</strong> above to add your own agent WhatsApp accounts — dynamic rotation starts immediately.
+                          </p>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    agentStats.map((agent, idx) => (
                     <tr key={agent.id} className="hover:bg-surface-900/50 transition">
                       <td className="py-3.5 px-4">
                         <div className="font-bold text-white">{agent.name}</div>
@@ -1111,7 +1126,7 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                           <button
                             type="button"
                             onClick={() => void handleDeleteAgent(agent.id, agent.name)}
-                            disabled={saving || agentStats.length <= 1}
+                            disabled={saving}
                             title="Delete agent"
                             className="p-1.5 rounded-lg bg-surface-800 hover:bg-rose-500/20 text-rose-400 disabled:opacity-30 cursor-pointer"
                           >
@@ -1120,7 +1135,8 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>

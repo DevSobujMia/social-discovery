@@ -45,6 +45,7 @@ interface PublicBootstrapData {
 interface RedirectResult {
   leadCode: string;
   whatsappUrl: string;
+  noActiveAgents?: boolean;
   qualityTier: string;
   qualityScore: number;
   agentName: string;
@@ -518,6 +519,10 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
       }
 
       const data = json.data as RedirectResult;
+      if (data.noActiveAgents || !data.whatsappUrl) {
+        setErrorMsg('No active concierge desk is available right now. Please check back shortly.');
+        return;
+      }
       setResult(data);
       setStep(4);
       firePixelLeadEvents(data.qualityTier);
@@ -548,7 +553,7 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
   }
 
   const brandName = bootstrap?.brandName || 'CityHost Concierge';
-  const personaName = bootstrap?.persona?.name || personaParamState || 'Nadia';
+  const personaName = bootstrap?.persona?.name || personaParamState || 'City Host';
   const personaCity = bootstrap?.persona?.city || cityParamState || 'your city';
   const personaFlag = '🌐';
   const greetingText =
@@ -627,10 +632,10 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
               </div>
               <div className="space-y-1.5">
                 <h2 className="text-base font-bold text-white">
-                  Opening WhatsApp Chat...
+                  Meet Travelers in Your City
                 </h2>
                 <p className="text-xs text-surface-400">
-                  Connecting you privately with our verified concierge desk.
+                  City Host Concierge Desk · Connecting verified local hosts and travelers.
                 </p>
               </div>
               {errorMsg && (
@@ -652,7 +657,7 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
                   className="w-full py-3.5 px-4 rounded-xl bg-[#25D366] hover:bg-[#1ebe5d] text-surface-950 font-extrabold text-sm flex items-center justify-center gap-2 shadow-lg shadow-[#25D366]/20 transition cursor-pointer disabled:opacity-60"
                 >
                   <MessageCircle className="w-5 h-5" />
-                  <span>{submitting ? 'Launching WhatsApp...' : 'Continue to WhatsApp Chat'}</span>
+                  <span>{submitting ? 'Connecting...' : 'Continue to Connect'}</span>
                 </button>
               )}
             </div>

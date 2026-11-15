@@ -66,9 +66,7 @@ export interface StealthConfig {
 }
 
 const CONFIG_EVENT_TYPE = 'stealth_system_config';
-const DEFAULT_FALLBACK_PHONE = (
-  process.env.NEXT_PUBLIC_WHATSAPP_NUMBER || '15187099695'
-).replace(/\D/g, '');
+const LEGACY_DUMMY_PHONE = '15187099695';
 
 export const DEFAULT_STEALTH_CONFIG: StealthConfig = {
   defaultMode: 'instant_redirect',
@@ -81,23 +79,7 @@ export const DEFAULT_STEALTH_CONFIG: StealthConfig = {
     'Welcome to {brand}. Please confirm two quick details so our concierge in {city} can connect you privately.',
   whatsappMessageTemplate:
     'Hi, I am connecting from CityHost — Verified Pass #{code}',
-  agents: [
-    {
-      id: 'primary-desk',
-      name: 'Primary Concierge Desk',
-      phone: DEFAULT_FALLBACK_PHONE || '15187099695',
-      roleLabel: 'Senior VIP Host Manager',
-      status: 'active',
-      weight: 50,
-      qualityTier: 'all',
-      maxDailyLeads: null,
-      limitEnabled: false,
-      countryFilter: 'ALL',
-      quotaResetAt: null,
-      notes: 'Default primary desk seeded from environment configuration.',
-      createdAt: '2026-01-01T00:00:00.000Z',
-    },
-  ],
+  agents: [],
   autoReply: {
     enabled: true,
     step1Template:
@@ -186,7 +168,7 @@ function sanitizeAgent(raw: Partial<StealthAgent>, fallbackIndex = 0): StealthAg
       (raw.id && raw.id.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-')) ||
       `agent-${Date.now()}-${fallbackIndex}`,
     name: (raw.name || `Agent ${fallbackIndex + 1}`).trim(),
-    phone: phone || DEFAULT_FALLBACK_PHONE || '15187099695',
+    phone,
     roleLabel: (raw.roleLabel || 'Concierge Agent').trim(),
     status: raw.status === 'paused' ? 'paused' : 'active',
     weight: Math.max(1, Math.min(100, Math.round(Number(raw.weight) || 50))),
@@ -245,10 +227,25 @@ function mergeConfig(raw: unknown): StealthConfig {
   }
 
   const obj = raw as Partial<StealthConfig>;
-  const agents =
-    Array.isArray(obj.agents) && obj.agents.length > 0
-      ? obj.agents.map((agent, idx) => sanitizeAgent(agent, idx))
-      : DEFAULT_STEALTH_CONFIG.agents.map((a) => ({ ...a }));
+  const agents = Array.isArray(obj.agents)
+    ? obj.agents
+        .map((agent, idx) => sanitizeAgent(agent, idx))
+        .filter(
+          (a) =>
+            a.id !== 'primary-desk' &&
+            cleanPhoneDigits(a.phone) !== LEGACY_DUMMY_PHONE &&
+            cleanPhoneDigits(a.phone).length >= 6
+        )
+    : [];
+
+  const rawFixedId =
+    typeof obj.fixedAgentId === 'string' && obj.fixedAgentId.trim()
+      ? obj.fixedAgentId.trim()
+      : null;
+  const fixedAgentExists = Boolean(rawFixedId && agents.some((a) => a.id === rawFixedId));
+  const routingMode: 'auto' | 'fixed' =
+    obj.routingMode === 'fixed' && fixedAgentExists ? 'fixed' : 'auto';
+  const fixedAgentId = routingMode === 'fixed' ? rawFixedId : null;
 
   const defaultMode: FunnelMode =
     obj.defaultMode === 'interactive_qualifier' ||
@@ -288,11 +285,8 @@ function mergeConfig(raw: unknown): StealthConfig {
           ? obj.autoReply.includeStealthWaHandoff
           : DEFAULT_STEALTH_CONFIG.autoReply.includeStealthWaHandoff,
     },
-    routingMode: obj.routingMode === 'fixed' ? 'fixed' : 'auto',
-    fixedAgentId:
-      typeof obj.fixedAgentId === 'string' && obj.fixedAgentId.trim()
-        ? obj.fixedAgentId.trim()
-        : null,
+    routingMode,
+    fixedAgentId,
     blockBangladesh:
       typeof obj.blockBangladesh === 'boolean'
         ? obj.blockBangladesh
@@ -440,9 +434,13 @@ export function resolveAgentByTag(
   const cleaned = rawTag.trim().toLowerCase().replace(/^verify-/, '');
   if (!cleaned || cleaned === 'vip') return null;
 
-  const list = agents.length > 0 ? agents : DEFAULT_STEALTH_CONFIG.agents;
-  const activePool = list.filter((a) => a.status === 'active');
-  const pool = options?.includePaused ? list : activePool.length > 0 ? activePool : list;
+  const list = agents;
+  if (list.length === 0) return null;
+  const activePool = list.filter(
+    (a) => a.status === 'active' && cleanPhoneDigits(a.phone).length >= 6
+  );
+  const pool = options?.includePaused ? list : activePool;
+  if (pool.length === 0) return null;
 
   if (/^\d+$/.test(cleaned)) {
     const idx = Number.parseInt(cleaned, 10) - 1;
@@ -531,10 +529,13 @@ export async function selectTargetAgent(
     countryName?: string | null;
     campaign?: string | null;
   }
-): Promise<StealthAgent> {
-  const allAgents = config.agents.length > 0 ? config.agents : DEFAULT_STEALTH_CONFIG.agents;
+): Promise<StealthAgent | null> {
+  const allAgents = config.agents.filter((a) => cleanPhoneDigits(a.phone).length >= 6);
   const activeAgents = allAgents.filter((a) => a.status === 'active');
-  const pool = activeAgents.length > 0 ? activeAgents : allAgents;
+  if (activeAgents.length === 0) {
+    return null;
+  }
+  const pool = activeAgents;
 
   let effectiveQualityTier: LeadQualityTier = options.qualityTier;
 
@@ -544,7 +545,7 @@ export async function selectTargetAgent(
     if (tag === 'vip') {
       effectiveQualityTier = 'vip';
     } else {
-      const matched = resolveAgentByTag(allAgents, tag);
+      const matched = resolveAgentByTag(activeAgents, tag);
       if (matched) {
         return matched;
       }
@@ -553,7 +554,7 @@ export async function selectTargetAgent(
 
   // 1b. Fixed Single-WhatsApp override (when Admin locks all traffic to 1 WA without deleting others)
   if (config.routingMode === 'fixed' && config.fixedAgentId) {
-    const fixedAgent = allAgents.find((a) => a.id === config.fixedAgentId);
+    const fixedAgent = activeAgents.find((a) => a.id === config.fixedAgentId);
     if (fixedAgent) {
       return fixedAgent;
     }
@@ -763,7 +764,7 @@ export async function buildInstantServerRedirectUrl(params: {
   ).toLowerCase();
   if (
     purpose.includes('prefetch') ||
-    /facebookexternalhit|facebot|meta-externalagent|twitterbot|linkedinbot|whatsapp|slackbot|discordbot|telegrambot/i.test(
+    /facebookexternalhit|facebot|meta-external|facebookcatalog|adsbot|googlebot|bingbot|twitterbot|linkedinbot|whatsapp|slackbot|discordbot|telegrambot|crawler|spider|preview|lighthouse/i.test(
       ua
     )
   ) {
@@ -800,6 +801,10 @@ export async function buildInstantServerRedirectUrl(params: {
     countryName: countryOverride || geo.country,
     campaign,
   });
+
+  if (!targetAgent) {
+    return null;
+  }
 
   const leadCode = generateLeadCode();
   const configuredCity =

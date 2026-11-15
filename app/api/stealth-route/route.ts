@@ -205,7 +205,6 @@ export async function POST(req: NextRequest) {
       campaign,
     });
 
-    const leadCode = generateLeadCode();
     const configuredPersonaCity =
       config.personaCity && config.personaCity.trim().toLowerCase() !== 'your city'
         ? config.personaCity.trim()
@@ -214,6 +213,22 @@ export async function POST(req: NextRequest) {
       cityOverride ||
       configuredPersonaCity ||
       (geo.city && geo.city !== 'Unknown' && geo.city !== 'your city' ? geo.city : 'your city');
+
+    if (!targetAgent) {
+      return success({
+        leadCode: '',
+        whatsappUrl: '',
+        noActiveAgents: true,
+        qualityTier,
+        qualityScore,
+        agentName: 'City Host Desk',
+        agentRole: 'Concierge',
+        city: displayCity,
+        flag: geo.flag,
+      });
+    }
+
+    const leadCode = generateLeadCode();
 
     const templateVars: Record<string, string> = {
       code: leadCode,

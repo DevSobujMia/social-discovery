@@ -507,16 +507,21 @@ export async function POST(req: NextRequest) {
 
     if (action === 'delete_agent') {
       const agentId = typeof body.agentId === 'string' ? body.agentId : '';
-      if (config.agents.length <= 1) {
-        return error('At least one agent must remain configured in the router.', 400);
-      }
-
       const nextAgents = config.agents.filter((a) => a.id !== agentId);
       if (nextAgents.length === config.agents.length) {
         return error('Agent not found.', 404);
       }
 
-      const updated = await saveStealthConfig({ agents: nextAgents });
+      const nextRoutingMode =
+        nextAgents.length === 0 || config.fixedAgentId === agentId ? 'auto' : config.routingMode;
+      const nextFixedAgentId =
+        nextRoutingMode === 'fixed' ? config.fixedAgentId : null;
+
+      const updated = await saveStealthConfig({
+        agents: nextAgents,
+        routingMode: nextRoutingMode,
+        fixedAgentId: nextFixedAgentId,
+      });
       return success({ config: updated, message: 'Agent removed.' });
     }
 

@@ -2,22 +2,9 @@ import type { Metadata } from 'next';
 import WhatsAppLandingCard from '@/components/WhatsAppLandingCard';
 
 export const metadata: Metadata = {
-  title: 'WhatsApp Chat | City Host',
-  description: 'Connect privately with City Host concierge on WhatsApp.',
+  title: 'City Host — Meet Travelers in Your City',
+  description: 'Connect with verified travelers, local hosts, and companions in your city.',
   referrer: 'no-referrer',
-  robots: {
-    index: false,
-    follow: false,
-    nocache: true,
-    googleBot: {
-      index: false,
-      follow: false,
-      noimageindex: true,
-      'max-video-preview': -1,
-      'max-image-preview': 'large',
-      'max-snippet': -1,
-    },
-  },
 };
 
 export default async function ChatSlugPage({
