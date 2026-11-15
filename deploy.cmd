@@ -32,7 +32,7 @@ if %ERRORLEVEL% neq 0 (
 echo [3/3] Building and deploying to Google Cloud Run...
 echo       Project:  project-032ba178-497a-4f65-950
 echo       Service:  cityhost-app
-echo       Region:   asia-south1
+echo       Region:   europe-west1
 echo       Domain:   https://cityhost.live
 echo.
 
@@ -85,7 +85,7 @@ exit /b %ERRORLEVEL%
 :RUN_DEPLOY
 call gcloud run deploy cityhost-app ^
   --project project-032ba178-497a-4f65-950 ^
-  --region asia-south1 ^
+  --region europe-west1 ^
   --source . ^
   --allow-unauthenticated ^
   --quiet
