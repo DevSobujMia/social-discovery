@@ -112,18 +112,31 @@ export async function GET(req: NextRequest) {
           eventType: 'wa_redirect',
           createdAt: { gte: startOfToday },
         },
-        select: { eventData: true },
+        select: { eventData: true, createdAt: true },
         take: 2000,
       }),
     ]);
+
+    const agentResetMap = new Map<string, number>();
+    for (const ag of config.agents) {
+      if (ag.quotaResetAt) {
+        const ms = new Date(ag.quotaResetAt).getTime();
+        if (!Number.isNaN(ms)) {
+          agentResetMap.set(ag.id, ms);
+        }
+      }
+    }
 
     const todayByAgent = new Map<string, number>();
     for (const ev of todayEvents) {
       const data = ev.eventData as Record<string, unknown> | null;
       const aId = typeof data?.agentId === 'string' ? data.agentId : '';
-      if (aId) {
-        todayByAgent.set(aId, (todayByAgent.get(aId) || 0) + 1);
+      if (!aId) continue;
+      const resetMs = agentResetMap.get(aId);
+      if (resetMs && ev.createdAt.getTime() < resetMs) {
+        continue;
       }
+      todayByAgent.set(aId, (todayByAgent.get(aId) || 0) + 1);
     }
 
     const agentAggMap = new Map<
@@ -212,18 +225,36 @@ export async function GET(req: NextRequest) {
 
     const totalRedirects = events.length;
 
+    const totalActiveWeight = config.agents
+      .filter((a) => a.status === 'active')
+      .reduce((sum, a) => sum + Math.max(1, a.weight), 0);
+
     const agentStats = config.agents.map((agent) => {
       const agg = agentAggMap.get(agent.id);
       const totalLeads = agg?.totalLeads || 0;
+      const todayLeads = todayByAgent.get(agent.id) || 0;
+      const configuredPercent =
+        agent.status === 'active' && totalActiveWeight > 0
+          ? Math.round((Math.max(1, agent.weight) / totalActiveWeight) * 100)
+          : 0;
+      const isTargetReached = Boolean(
+        agent.status === 'active' &&
+          agent.limitEnabled &&
+          agent.maxDailyLeads !== null &&
+          agent.maxDailyLeads > 0 &&
+          todayLeads >= agent.maxDailyLeads
+      );
       return {
         ...agent,
         totalLeads,
-        todayLeads: todayByAgent.get(agent.id) || 0,
+        todayLeads,
         vipLeads: agg?.vipLeads || 0,
         capturedPhones: agg?.capturedPhones || 0,
         lastLeadAt: agg?.lastLeadAt || null,
         sharePercent:
           totalRedirects > 0 ? Math.round((totalLeads / totalRedirects) * 100) : 0,
+        configuredPercent,
+        isTargetReached,
       };
     });
 
@@ -317,6 +348,17 @@ export async function POST(req: NextRequest) {
         ? config.agents.findIndex((a) => a.id === rawId)
         : -1;
 
+      // Prevent duplicate WhatsApp numbers so one WA number never receives double share accidentally
+      const duplicateAgent = config.agents.find(
+        (a, idx) => idx !== existingIndex && cleanPhoneDigits(a.phone) === phone
+      );
+      if (duplicateAgent) {
+        return error(
+          `This WhatsApp number (+${phone}) is already assigned to "${duplicateAgent.name}". Edit that row or use a different number.`,
+          400
+        );
+      }
+
       const qualityTier: AgentQualityTier =
         rawAgent.qualityTier === 'vip_only' || rawAgent.qualityTier === 'standard_only'
           ? rawAgent.qualityTier
@@ -331,6 +373,21 @@ export async function POST(req: NextRequest) {
           ? Math.floor(Number(maxDailyRaw))
           : null;
 
+      const limitEnabled =
+        typeof rawAgent.limitEnabled === 'boolean'
+          ? rawAgent.limitEnabled
+          : Boolean(maxDailyLeads && maxDailyLeads > 0);
+      const countryFilter =
+        typeof rawAgent.countryFilter === 'string' && rawAgent.countryFilter.trim()
+          ? rawAgent.countryFilter.trim().toUpperCase().slice(0, 16)
+          : 'ALL';
+      const quotaResetAt =
+        rawAgent.resetQuota === true
+          ? new Date().toISOString()
+          : existingIndex >= 0
+            ? config.agents[existingIndex].quotaResetAt || null
+            : null;
+
       const nextAgent: StealthAgent = {
         id:
           existingIndex >= 0
@@ -343,9 +400,12 @@ export async function POST(req: NextRequest) {
             ? rawAgent.roleLabel.trim()
             : 'Concierge Agent',
         status: rawAgent.status === 'paused' ? 'paused' : 'active',
-        weight: Math.max(1, Math.min(20, Number(rawAgent.weight) || 1)),
+        weight: Math.max(1, Math.min(100, Math.round(Number(rawAgent.weight) || 50))),
         qualityTier,
         maxDailyLeads,
+        limitEnabled,
+        countryFilter,
+        quotaResetAt,
         notes: typeof rawAgent.notes === 'string' ? rawAgent.notes.trim() : '',
         createdAt:
           existingIndex >= 0
@@ -362,6 +422,71 @@ export async function POST(req: NextRequest) {
 
       const updated = await saveStealthConfig({ agents: nextAgents });
       return success({ config: updated, agent: nextAgent, message: 'Agent saved.' });
+    }
+
+    if (action === 'quick_update_agent') {
+      const agentId = typeof body.agentId === 'string' ? body.agentId : '';
+      const idx = config.agents.findIndex((a) => a.id === agentId);
+      if (idx === -1) {
+        return error('Agent not found.', 404);
+      }
+
+      const existing = config.agents[idx];
+      const nextWeight =
+        body.weight !== undefined
+          ? Math.max(1, Math.min(100, Math.round(Number(body.weight) || 1)))
+          : existing.weight;
+      const nextMaxDaily =
+        body.maxDailyLeads === null || body.maxDailyLeads === ''
+          ? null
+          : body.maxDailyLeads !== undefined
+            ? Number(body.maxDailyLeads) > 0
+              ? Math.floor(Number(body.maxDailyLeads))
+              : null
+            : existing.maxDailyLeads;
+      const nextLimitEnabled =
+        typeof body.limitEnabled === 'boolean'
+          ? body.limitEnabled
+          : body.maxDailyLeads !== undefined
+            ? Boolean(nextMaxDaily && nextMaxDaily > 0)
+            : existing.limitEnabled;
+      const nextCountryFilter =
+        typeof body.countryFilter === 'string' && body.countryFilter.trim()
+          ? body.countryFilter.trim().toUpperCase().slice(0, 16)
+          : existing.countryFilter;
+      const nextStatus =
+        body.status === 'active' || body.status === 'paused'
+          ? body.status
+          : existing.status;
+      const nextQuotaResetAt =
+        body.resetQuota === true ? new Date().toISOString() : existing.quotaResetAt;
+
+      const nextAgents = config.agents.map((a, i) =>
+        i === idx
+          ? {
+              ...a,
+              weight: nextWeight,
+              maxDailyLeads: nextMaxDaily,
+              limitEnabled: nextLimitEnabled,
+              countryFilter: nextCountryFilter,
+              status: nextStatus,
+              quotaResetAt: nextQuotaResetAt,
+            }
+          : a
+      );
+
+      const updated = await saveStealthConfig({ agents: nextAgents });
+      return success({ config: updated, message: 'Agent settings updated.' });
+    }
+
+    if (action === 'equalize_weights') {
+      const activeAgents = config.agents.filter((a) => a.status === 'active');
+      const equalShare = Math.max(1, Math.round(100 / Math.max(1, activeAgents.length)));
+      const nextAgents = config.agents.map((a) =>
+        a.status === 'active' ? { ...a, weight: equalShare } : a
+      );
+      const updated = await saveStealthConfig({ agents: nextAgents });
+      return success({ config: updated, message: 'Active agents balanced equally.' });
     }
 
     if (action === 'toggle_agent') {

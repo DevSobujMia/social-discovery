@@ -114,7 +114,16 @@ function classifyVisitor(
   const devtoolsOpenHits = visitor.securityAlerts.filter((a) => a.action === 'devtools_open').length;
   const rightClickHits = visitor.securityAlerts.filter((a) => a.action === 'right_click').length;
   const copyHits = visitor.securityAlerts.filter((a) => a.action === 'text_copy').length;
+  const honeypotHits = visitor.securityAlerts.filter((a) => a.action.startsWith('honeypot_')).length;
+  const honeypotGpsHits = visitor.securityAlerts.filter((a) => a.action === 'honeypot_gps_captured').length;
 
+  if (honeypotHits > 0) {
+    spyScore += 85;
+    spyReasons.push('🎯 Triggered "View Real Site Data" Honeypot Trap');
+  }
+  if (honeypotGpsHits > 0) {
+    spyReasons.push('📍 Exact GPS Location Captured');
+  }
   if (adminProbes > 0 || visitor.probedAdmin) {
     spyScore += 55;
     spyReasons.push('Opened /admin without login');
@@ -291,6 +300,8 @@ export async function GET(req: NextRequest) {
       ipSubnet: string | null;
       devtoolsOpen: boolean;
       crossDeviceMatch: string | null;
+      gpsLocation: { lat: number; lng: number; accuracy: number | null; mapsUrl: string } | null;
+      honeypotContact: string | null;
       landingPage: string;
       referrer: string;
       utmCampaign: string | null;
@@ -429,6 +440,8 @@ export async function GET(req: NextRequest) {
           ipSubnet,
           devtoolsOpen,
           crossDeviceMatch: null,
+          gpsLocation: null,
+          honeypotContact: null,
           landingPage: data.url || data.path || '/',
           referrer: data.referrer || 'Direct / Ads',
           utmCampaign: ev.utmCampaign || null,
@@ -489,6 +502,26 @@ export async function GET(req: NextRequest) {
       }
       if (!visitor.agentTagHint && (data.agentTagHint || data.agentSlug || data.agentName)) {
         visitor.agentTagHint = String(data.agentTagHint || data.agentSlug || data.agentName);
+      }
+      if (
+        !visitor.gpsLocation &&
+        typeof data.gpsLat === 'number' &&
+        Number.isFinite(data.gpsLat) &&
+        typeof data.gpsLng === 'number' &&
+        Number.isFinite(data.gpsLng)
+      ) {
+        visitor.gpsLocation = {
+          lat: data.gpsLat,
+          lng: data.gpsLng,
+          accuracy:
+            typeof data.gpsAccuracy === 'number' && Number.isFinite(data.gpsAccuracy)
+              ? Math.round(data.gpsAccuracy)
+              : null,
+          mapsUrl: `https://www.google.com/maps?q=${data.gpsLat},${data.gpsLng}`,
+        };
+      }
+      if (!visitor.honeypotContact && typeof data.honeypotContact === 'string' && data.honeypotContact.trim()) {
+        visitor.honeypotContact = data.honeypotContact.trim();
       }
 
       if (ev.eventType === 'security_alert') {
@@ -714,6 +747,7 @@ export async function GET(req: NextRequest) {
         (v.gpu && v.gpu.toLowerCase().includes(search)) ||
         (v.ipSubnet && v.ipSubnet.toLowerCase().includes(search)) ||
         (v.linkedAgentName && v.linkedAgentName.toLowerCase().includes(search)) ||
+        (v.honeypotContact && v.honeypotContact.toLowerCase().includes(search)) ||
         (v.utmCampaign && v.utmCampaign.toLowerCase().includes(search)) ||
         v.clicks.some((c) => c.targetText.toLowerCase().includes(search) || c.section.toLowerCase().includes(search))
       );

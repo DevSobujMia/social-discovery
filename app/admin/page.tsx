@@ -455,6 +455,25 @@ export default function AdminDashboardPage() {
         try {
           localStorage.setItem('cityhost_staff_user', JSON.stringify(data.data.staff));
           localStorage.setItem('cityhost_actor_role', 'admin');
+          let vid = localStorage.getItem('cityhost_vid');
+          if (!vid || vid.length < 8) {
+            vid = `v_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 9)}`;
+            localStorage.setItem('cityhost_vid', vid);
+          }
+          if (!sessionStorage.getItem('cityhost_admin_tagged')) {
+            sessionStorage.setItem('cityhost_admin_tagged', '1');
+            adminFetch('/api/admin/visitor-analytics', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: 'tag_actor',
+                visitorId: vid,
+                role: 'admin',
+                label: `Admin: ${data.data.staff.displayName || 'Administrator'}`,
+                skipIp: true,
+              }),
+            }).catch(() => {});
+          }
         } catch {}
       } else {
         const token = getStoredStaffToken();
@@ -533,7 +552,11 @@ export default function AdminDashboardPage() {
           try {
             localStorage.setItem('cityhost_staff_user', JSON.stringify(data.data.staff));
             localStorage.setItem('cityhost_actor_role', 'admin');
-            const vid = localStorage.getItem('cityhost_vid');
+            let vid = localStorage.getItem('cityhost_vid');
+            if (!vid || vid.length < 8) {
+              vid = `v_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 9)}`;
+              localStorage.setItem('cityhost_vid', vid);
+            }
             if (vid) {
               const authHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
               if (token) authHeaders.Authorization = `Bearer ${token}`;
@@ -1857,7 +1880,7 @@ export default function AdminDashboardPage() {
     <div className="min-h-screen bg-surface-950 text-white font-sans flex flex-col">
       {/* Toast */}
       {toastMessage && (
-        <div className="fixed top-4 right-4 z-50 animate-slide-up">
+        <div className="fixed top-4 right-4 z-50 pointer-events-none animate-slide-up">
           <div className="bg-surface-800 border border-accent-teal/50 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-2xl flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-accent-teal" />
             <span>{toastMessage}</span>

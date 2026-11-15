@@ -48,7 +48,20 @@ interface AgentStatRow extends StealthAgent {
   capturedPhones: number;
   lastLeadAt: string | null;
   sharePercent: number;
+  configuredPercent?: number;
+  isTargetReached?: boolean;
 }
+
+const COUNTRY_FILTER_OPTIONS = [
+  { id: 'ALL', label: '🌍 All Countries' },
+  { id: 'UK', label: '🇬🇧 UK' },
+  { id: 'US', label: '🇺🇸 USA' },
+  { id: 'CA', label: '🇨🇦 Canada' },
+  { id: 'AU', label: '🇦🇺 Australia' },
+  { id: 'EU', label: '🇪🇺 Europe' },
+  { id: 'AE', label: '🇦🇪 UAE' },
+  { id: 'SG', label: '🇸🇬 Singapore' },
+];
 
 interface LedgerRow {
   id: string;
@@ -102,9 +115,11 @@ const EMPTY_AGENT_FORM = {
   name: '',
   phone: '',
   roleLabel: 'Senior VIP Concierge',
-  weight: 2,
+  weight: 50,
   qualityTier: 'all' as AgentQualityTier,
   maxDailyLeads: '',
+  limitEnabled: false,
+  countryFilter: 'ALL',
   status: 'active' as 'active' | 'paused',
   notes: '',
 };
@@ -295,9 +310,11 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
             name: agentForm.name,
             phone: agentForm.phone,
             roleLabel: agentForm.roleLabel,
-            weight: Number(agentForm.weight) || 1,
+            weight: Number(agentForm.weight) || 50,
             qualityTier: agentForm.qualityTier,
             maxDailyLeads: agentForm.maxDailyLeads ? Number(agentForm.maxDailyLeads) : null,
+            limitEnabled: agentForm.limitEnabled,
+            countryFilter: agentForm.countryFilter || 'ALL',
             status: agentForm.status,
             notes: agentForm.notes,
           },
@@ -430,6 +447,95 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
     }
   }
 
+  async function handleQuickUpdateAgent(
+    agentId: string,
+    patch: Record<string, unknown>,
+    successMsg?: string
+  ) {
+    setSaving(true);
+    try {
+      const res = await adminFetch('/api/admin/stealth-router', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'quick_update_agent',
+          agentId,
+          ...patch,
+        }),
+      });
+      const json = await res.json();
+      if (res.ok && json?.success) {
+        if (json.data?.config) {
+          setConfig(json.data.config);
+          setConfigDraft(json.data.config);
+        }
+        showBanner('ok', successMsg || 'Updated WhatsApp routing rule.');
+        await loadData();
+      } else {
+        showBanner('err', json?.error || 'Failed to update agent rule.');
+      }
+    } catch {
+      showBanner('err', 'Network error updating agent.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleEqualizeWeights() {
+    setSaving(true);
+    try {
+      const res = await adminFetch('/api/admin/stealth-router', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'equalize_weights' }),
+      });
+      const json = await res.json();
+      if (res.ok && json?.success) {
+        if (json.data?.config) {
+          setConfig(json.data.config);
+          setConfigDraft(json.data.config);
+        }
+        showBanner('ok', 'All active WhatsApp numbers balanced with equal % share.');
+        await loadData();
+      } else {
+        showBanner('err', json?.error || 'Failed to equalize shares.');
+      }
+    } catch {
+      showBanner('err', 'Network error equalizing shares.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleSwitchToInstantDirect() {
+    setSaving(true);
+    try {
+      const res = await adminFetch('/api/admin/stealth-router', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'save_config',
+          config: { ...(configDraft || config), defaultMode: 'instant_redirect' },
+        }),
+      });
+      const json = await res.json();
+      if (res.ok && json?.success) {
+        if (json.data?.config) {
+          setConfig(json.data.config);
+          setConfigDraft(json.data.config);
+        }
+        showBanner('ok', 'Instant Direct WhatsApp (0s — No Landing Page) enabled!');
+        await loadData();
+      } else {
+        showBanner('err', json?.error || 'Failed to switch default mode.');
+      }
+    } catch {
+      showBanner('err', 'Network error switching default mode.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function openCloneAgentModal(agent: AgentStatRow) {
     setAgentForm({
       id: '',
@@ -439,6 +545,8 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
       weight: agent.weight,
       qualityTier: agent.qualityTier,
       maxDailyLeads: agent.maxDailyLeads ? String(agent.maxDailyLeads) : '',
+      limitEnabled: agent.limitEnabled,
+      countryFilter: agent.countryFilter || 'ALL',
       status: 'active',
       notes: agent.notes
         ? `${agent.notes} | 2nd WA of ${agent.name}`
@@ -456,6 +564,8 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
       weight: agent.weight,
       qualityTier: agent.qualityTier,
       maxDailyLeads: agent.maxDailyLeads ? String(agent.maxDailyLeads) : '',
+      limitEnabled: agent.limitEnabled,
+      countryFilter: agent.countryFilter || 'ALL',
       status: agent.status,
       notes: agent.notes || '',
     });
@@ -637,8 +747,8 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
             </button>
           </div>
 
-          {/* Routing Mode Bar: Auto-Dynamic Rotation vs Fixed Single WhatsApp */}
-          <div className="glass-card p-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3 border border-surface-700/70">
+          {/* Routing Mode Bar: Auto-Dynamic Rotation, Equal % Split, Fixed Single WA & Instant Mode */}
+          <div className="glass-card p-3.5 flex flex-col xl:flex-row xl:items-center justify-between gap-3 border border-surface-700/70">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-[11px] font-bold uppercase tracking-wider text-surface-400 mr-1">
                 Routing Mode:
@@ -669,28 +779,59 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
               >
                 📌 Fixed Single WhatsApp
               </button>
+              <button
+                type="button"
+                data-testid="equalize-weights-btn"
+                disabled={saving || agentStats.length === 0}
+                onClick={() => void handleEqualizeWeights()}
+                title="Split random % equally across all active WhatsApp numbers"
+                className="px-3 py-1.5 rounded-xl text-xs font-bold border border-indigo-500/35 bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 transition cursor-pointer disabled:opacity-50"
+              >
+                ⚖️ Equal % Split
+              </button>
             </div>
 
-            {config?.routingMode === 'fixed' && (
-              <div className="flex items-center gap-2">
-                <label className="text-[11px] font-semibold text-amber-300 whitespace-nowrap">
-                  Locked Target WA:
-                </label>
-                <select
-                  data-testid="fixed-agent-select"
-                  disabled={saving}
-                  value={config.fixedAgentId || agentStats[0]?.id || ''}
-                  onChange={(e) => void handleSetRoutingMode('fixed', e.target.value)}
-                  className="input-field py-1.5 px-2.5 text-xs min-w-[200px]"
+            <div className="flex items-center gap-2 flex-wrap">
+              {config?.defaultMode === 'instant_redirect' ? (
+                <span
+                  data-testid="instant-direct-badge"
+                  className="px-3 py-1.5 rounded-xl text-[11px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/35"
                 >
-                  {agentStats.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name} (+{a.phone})
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
+                  ⚡ Instant Direct WA (0s — No Landing Page)
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  data-testid="enable-instant-direct-btn"
+                  disabled={saving}
+                  onClick={() => void handleSwitchToInstantDirect()}
+                  className="px-3 py-1.5 rounded-xl text-[11px] font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 cursor-pointer disabled:opacity-50"
+                >
+                  ⚡ Enable Instant Direct WA (0s)
+                </button>
+              )}
+
+              {config?.routingMode === 'fixed' && (
+                <div className="flex items-center gap-2">
+                  <label className="text-[11px] font-semibold text-amber-300 whitespace-nowrap">
+                    Locked Target WA:
+                  </label>
+                  <select
+                    data-testid="fixed-agent-select"
+                    disabled={saving}
+                    value={config.fixedAgentId || agentStats[0]?.id || ''}
+                    onChange={(e) => void handleSetRoutingMode('fixed', e.target.value)}
+                    className="input-field py-1.5 px-2.5 text-xs min-w-[200px]"
+                  >
+                    {agentStats.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name} (+{a.phone})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="glass-card overflow-hidden">
@@ -698,14 +839,12 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-surface-800 text-[11px] uppercase tracking-wider text-surface-400 bg-surface-900/70">
-                    <th className="py-3 px-4">Agent / Desk</th>
+                    <th className="py-3 px-4">Agent & Country Pool</th>
                     <th className="py-3 px-4">WhatsApp Number</th>
-                    <th className="py-3 px-4">Routing Tier</th>
-                    <th className="py-3 px-4">Weight & Cap</th>
-                    <th className="py-3 px-4">Today</th>
-                    <th className="py-3 px-4">Range Leads</th>
-                    <th className="py-3 px-4">Captured Phones</th>
-                    <th className="py-3 px-4">Status</th>
+                    <th className="py-3 px-4">Random % Share</th>
+                    <th className="py-3 px-4">Target Limit Mode</th>
+                    <th className="py-3 px-4">Today / Reset</th>
+                    <th className="py-3 px-4">ON / OFF</th>
                     <th className="py-3 px-4 text-right">Actions</th>
                   </tr>
                 </thead>
@@ -717,54 +856,188 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                         <div className="text-[11px] text-surface-400">
                           {agent.roleLabel} • <code className="text-surface-500">{agent.id}</code>
                         </div>
-                      </td>
-                      <td className="py-3.5 px-4 font-mono text-emerald-300">
-                        +{agent.phone}
+                        <div className="mt-1.5">
+                          <select
+                            data-testid={`country-filter-${idx}`}
+                            disabled={saving}
+                            value={agent.countryFilter || 'ALL'}
+                            onChange={(e) =>
+                              void handleQuickUpdateAgent(
+                                agent.id,
+                                { countryFilter: e.target.value },
+                                `Country pool for ${agent.name} set to ${e.target.value}.`
+                              )
+                            }
+                            className="bg-surface-900 border border-surface-700 rounded-lg px-2 py-1 text-[10px] font-semibold text-surface-200 cursor-pointer"
+                          >
+                            {COUNTRY_FILTER_OPTIONS.map((opt) => (
+                              <option key={opt.id} value={opt.id}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
                       </td>
                       <td className="py-3.5 px-4">
-                        <span className="px-2 py-0.5 rounded-lg bg-surface-800 border border-surface-700 text-[11px] text-surface-200">
-                          {agent.qualityTier === 'vip_only'
-                            ? 'VIP Only'
-                            : agent.qualityTier === 'standard_only'
-                              ? 'Standard Queue'
-                              : 'All Leads'}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 text-surface-300">
-                        <span className="font-bold text-white">x{agent.weight}</span>
-                        <span className="text-surface-500">
-                          {' '}
-                          • {agent.maxDailyLeads ? `${agent.maxDailyLeads}/day max` : 'Unlimited'}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 font-bold text-white">{agent.todayLeads}</td>
-                      <td className="py-3.5 px-4">
-                        <span className="font-bold text-white">{agent.totalLeads}</span>{' '}
-                        <span className="text-[11px] text-surface-400">
-                          ({agent.sharePercent}% share • {agent.vipLeads} VIP)
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 text-accent-teal font-semibold">
-                        {agent.capturedPhones}
-                        <span className="block text-[10px] text-surface-500 font-normal">
-                          Last: {formatTimeAgo(agent.lastLeadAt)}
+                        <div className="font-mono text-emerald-300 font-semibold">
+                          +{agent.phone}
+                        </div>
+                        <span className="inline-block mt-1 px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/25 text-[9px] font-bold text-emerald-300">
+                          Duplicate Protected
                         </span>
                       </td>
                       <td className="py-3.5 px-4">
-                        <span
-                          className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
+                        <div className="flex items-center gap-1">
+                          <input
+                            key={`${agent.id}-w-${agent.weight}`}
+                            data-testid={`weight-input-${idx}`}
+                            type="number"
+                            min={1}
+                            max={100}
+                            disabled={saving}
+                            defaultValue={agent.weight}
+                            onBlur={(e) => {
+                              const next = Math.max(
+                                1,
+                                Math.min(100, Math.round(Number(e.target.value) || 1))
+                              );
+                              if (next !== agent.weight) {
+                                void handleQuickUpdateAgent(
+                                  agent.id,
+                                  { weight: next },
+                                  `${agent.name} weight updated.`
+                                );
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                (e.target as HTMLInputElement).blur();
+                              }
+                            }}
+                            className="w-16 bg-surface-900 border border-surface-700 rounded-lg px-2 py-1 text-xs font-bold text-white text-center"
+                          />
+                          <span className="text-surface-400 font-bold">%</span>
+                        </div>
+                        <div className="text-[10px] text-accent-teal font-semibold mt-1">
+                          → {agent.configuredPercent ?? agent.sharePercent}% actual share
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <div className="flex flex-col gap-1.5">
+                          <button
+                            type="button"
+                            data-testid={`limit-toggle-${idx}`}
+                            disabled={saving}
+                            onClick={() => {
+                              const nextLimitEnabled = !agent.limitEnabled;
+                              void handleQuickUpdateAgent(
+                                agent.id,
+                                {
+                                  limitEnabled: nextLimitEnabled,
+                                  maxDailyLeads:
+                                    nextLimitEnabled && !agent.maxDailyLeads
+                                      ? 25
+                                      : agent.maxDailyLeads,
+                                },
+                                nextLimitEnabled
+                                  ? `${agent.name}: Auto-stop when target reached ON.`
+                                  : `${agent.name}: Unlimited rotation (manual OFF).`
+                              );
+                            }}
+                            className={`px-2 py-1 rounded-lg border text-[10px] font-bold text-left cursor-pointer disabled:opacity-40 whitespace-nowrap ${
+                              agent.limitEnabled
+                                ? 'bg-amber-500/15 border-amber-500/40 text-amber-200'
+                                : 'bg-sky-500/15 border-sky-500/35 text-sky-200'
+                            }`}
+                          >
+                            {agent.limitEnabled
+                              ? '🎯 Target Limit: ON'
+                              : '♾️ Unlimited (Manual Off)'}
+                          </button>
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] text-surface-400">Max:</span>
+                            <input
+                              key={`${agent.id}-max-${agent.maxDailyLeads ?? 'none'}`}
+                              data-testid={`max-leads-input-${idx}`}
+                              type="number"
+                              min={0}
+                              disabled={saving}
+                              placeholder="∞"
+                              defaultValue={agent.maxDailyLeads ?? ''}
+                              onBlur={(e) => {
+                                const raw = e.target.value.trim();
+                                const nextMax =
+                                  raw && Number(raw) > 0 ? Math.floor(Number(raw)) : null;
+                                const prevMax = agent.maxDailyLeads ?? null;
+                                if (nextMax !== prevMax) {
+                                  void handleQuickUpdateAgent(
+                                    agent.id,
+                                    {
+                                      maxDailyLeads: nextMax,
+                                      limitEnabled: nextMax !== null,
+                                    },
+                                    nextMax
+                                      ? `${agent.name} target set to ${nextMax} leads/day.`
+                                      : `${agent.name} set to unlimited.`
+                                  );
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  (e.target as HTMLInputElement).blur();
+                                }
+                              }}
+                              className="w-16 bg-surface-900 border border-surface-700 rounded-lg px-2 py-0.5 text-[11px] font-semibold text-white"
+                            />
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <div className="font-bold text-white">
+                          {agent.limitEnabled && agent.maxDailyLeads
+                            ? `${agent.todayLeads} / ${agent.maxDailyLeads}`
+                            : `${agent.todayLeads} today`}
+                        </div>
+                        <div className="text-[10px] text-surface-400">
+                          Total: {agent.totalLeads} ({agent.sharePercent}%)
+                        </div>
+                        {agent.isTargetReached && (
+                          <span className="inline-block mt-1 px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-[10px] font-bold text-rose-300">
+                            🛑 Target Full
+                          </span>
+                        )}
+                        {agent.todayLeads > 0 && (
+                          <button
+                            type="button"
+                            data-testid={`reset-quota-${idx}`}
+                            disabled={saving}
+                            onClick={() =>
+                              void handleQuickUpdateAgent(
+                                agent.id,
+                                { resetQuota: true },
+                                `${agent.name} daily counter reset to 0.`
+                              )
+                            }
+                            className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-800 hover:bg-surface-700 border border-surface-700 text-[10px] font-semibold text-surface-200 cursor-pointer disabled:opacity-40"
+                          >
+                            ↺ Reset 0
+                          </button>
+                        )}
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <button
+                          type="button"
+                          data-testid={`agent-switch-${idx}`}
+                          disabled={saving}
+                          onClick={() => void handleToggleAgent(agent.id)}
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border cursor-pointer transition disabled:opacity-40 whitespace-nowrap ${
                             agent.status === 'active'
-                              ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-                              : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                              ? 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border-emerald-500/35'
+                              : 'bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border-rose-500/35'
                           }`}
                         >
-                          <span
-                            className={`w-1.5 h-1.5 rounded-full ${
-                              agent.status === 'active' ? 'bg-emerald-400' : 'bg-amber-400'
-                            }`}
-                          />
-                          {agent.status === 'active' ? 'Active' : 'Paused'}
-                        </span>
+                          <span>{agent.status === 'active' ? '🟢 ON' : '🔴 OFF'}</span>
+                        </button>
                       </td>
                       <td className="py-3.5 px-4">
                         <div className="flex items-center justify-end gap-1.5 flex-wrap">
@@ -825,19 +1098,6 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                                 <ShieldAlert className="w-3 h-3" />
                                 <span>Trap Link</span>
                               </>
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void handleToggleAgent(agent.id)}
-                            disabled={saving}
-                            title={agent.status === 'active' ? 'Pause agent' : 'Resume agent'}
-                            className="p-1.5 rounded-lg bg-surface-800 hover:bg-surface-700 text-surface-200 cursor-pointer"
-                          >
-                            {agent.status === 'active' ? (
-                              <Pause className="w-3.5 h-3.5 text-amber-400" />
-                            ) : (
-                              <Play className="w-3.5 h-3.5 text-emerald-400" />
                             )}
                           </button>
                           <button
@@ -1651,29 +1911,32 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="block text-[11px] font-semibold text-surface-300 mb-1">
-                    Weight (1-20)
+                    Traffic Share % (1-100)
                   </label>
                   <input
                     type="number"
                     min={1}
-                    max={20}
+                    max={100}
                     value={agentForm.weight}
                     onChange={(e) =>
-                      setAgentForm({ ...agentForm, weight: Number(e.target.value) || 1 })
+                      setAgentForm({
+                        ...agentForm,
+                        weight: Math.max(1, Math.min(100, Number(e.target.value) || 1)),
+                      })
                     }
                     className="input-field w-full text-xs"
                   />
                 </div>
                 <div>
                   <label className="block text-[11px] font-semibold text-surface-300 mb-1">
-                    Daily Lead Cap
+                    Daily Target Cap
                   </label>
                   <input
                     type="number"
                     min={0}
                     value={agentForm.maxDailyLeads}
                     onChange={(e) => setAgentForm({ ...agentForm, maxDailyLeads: e.target.value })}
-                    placeholder="Unlimited"
+                    placeholder="e.g. 25"
                     className="input-field w-full text-xs"
                   />
                 </div>
@@ -1693,6 +1956,45 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                   >
                     <option value="active">Active</option>
                     <option value="paused">Paused</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-surface-300 mb-1">
+                    Target Limit Mode
+                  </label>
+                  <select
+                    value={agentForm.limitEnabled ? 'limited' : 'unlimited'}
+                    onChange={(e) =>
+                      setAgentForm({
+                        ...agentForm,
+                        limitEnabled: e.target.value === 'limited',
+                      })
+                    }
+                    className="input-field w-full text-xs"
+                  >
+                    <option value="unlimited">♾️ Unlimited (Manual Off)</option>
+                    <option value="limited">🎯 Stop at Target Limit</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-surface-300 mb-1">
+                    Country Pool (For Country Ads)
+                  </label>
+                  <select
+                    value={agentForm.countryFilter}
+                    onChange={(e) =>
+                      setAgentForm({ ...agentForm, countryFilter: e.target.value })
+                    }
+                    className="input-field w-full text-xs"
+                  >
+                    {COUNTRY_FILTER_OPTIONS.map((opt) => (
+                      <option key={opt.id} value={opt.id}>
+                        {opt.label}
+                      </option>
+                    ))}
                   </select>
                 </div>
               </div>

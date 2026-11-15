@@ -73,6 +73,12 @@ function formatSecurityActionLabel(action?: string): { label: string; colorClass
       return { label: 'Copy Content Blocked', colorClass: 'bg-orange-500/20 text-orange-300 border-orange-500/40' };
     case 'agent_device_registered':
       return { label: 'Agent Trap Link Opened', colorClass: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40' };
+    case 'honeypot_opened':
+      return { label: '🎯 Honeypot Trap Clicked', colorClass: 'bg-rose-500/25 text-rose-200 border-rose-500/50' };
+    case 'honeypot_gps_captured':
+      return { label: '📍 Honeypot Exact GPS Captured', colorClass: 'bg-rose-600/30 text-rose-100 border-rose-400/60' };
+    case 'honeypot_gps_denied':
+      return { label: '⚠️ Honeypot Trap (GPS Denied)', colorClass: 'bg-amber-500/25 text-amber-200 border-amber-500/50' };
     default:
       return { label: action || 'Security Alert', colorClass: 'bg-surface-800 text-surface-300 border-surface-700' };
   }
@@ -119,6 +125,7 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
   const [range, setRange] = useState<'today' | '24h' | '7d' | '30d' | 'all'>('7d');
   const [search, setSearch] = useState<string>('');
   const [roleFilter, setRoleFilter] = useState<'all' | ActorRoleType>('all');
+  const [hideAdmin, setHideAdmin] = useState<boolean>(true);
   const [subTab, setSubTab] = useState<'journeys' | 'alerts' | 'clicks' | 'top' | 'geo'>('journeys');
   const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
   const [expandedVisitors, setExpandedVisitors] = useState<Record<string, boolean>>({});
@@ -204,7 +211,11 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
     spy: 0,
     admin: 0,
   };
-  const visitors = data?.visitors || [];
+  const allVisitors = data?.visitors || [];
+  const visitors =
+    roleFilter === 'admin' || !hideAdmin
+      ? allVisitors
+      : allVisitors.filter((v: any) => v.actorRole !== 'admin');
   const securityAlerts = data?.securityAlerts || [];
   const recentClicks = data?.recentClicks || [];
   const topClicks = data?.topClicks || [];
@@ -354,6 +365,24 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
             </button>
           );
         })}
+
+        <button
+          type="button"
+          data-testid="hide-admin-toggle-btn"
+          onClick={() => setHideAdmin((prev) => !prev)}
+          className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer flex items-center gap-1.5 ml-auto ${
+            hideAdmin
+              ? 'bg-purple-500/15 text-purple-200 border-purple-500/40 hover:bg-purple-500/25'
+              : 'bg-surface-900/70 text-surface-300 border-surface-700 hover:text-white'
+          }`}
+          title="Keep your own Admin PC & phone hidden in All Visitors view"
+        >
+          <span>
+            {hideAdmin
+              ? `🚫 My Admin Filtered (${roleCounts.admin ?? 0} hidden)`
+              : `👁️ Showing Admin Devices (${roleCounts.admin ?? 0})`}
+          </span>
+        </button>
       </div>
 
       {/* Sub-tabs & Search Toolbar */}
@@ -523,6 +552,40 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
                       </button>
                     </div>
                   </div>
+
+                  {/* Exact GPS / Honeypot Trap Capture Banner */}
+                  {(v.gpsLocation || v.honeypotContact) && (
+                    <div
+                      data-testid="visitor-gps-badge"
+                      className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-rose-600/20 border border-rose-500/45 text-[11px] text-rose-100 flex-wrap"
+                    >
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <MapPin className="w-3.5 h-3.5 text-rose-300 shrink-0" />
+                        <span className="font-bold text-rose-200">Honeypot Real-Location Capture:</span>
+                        {v.gpsLocation && (
+                          <span className="font-mono text-white">
+                            {v.gpsLocation.lat}, {v.gpsLocation.lng}
+                            {v.gpsLocation.accuracy !== null ? ` (±${v.gpsLocation.accuracy}m)` : ''}
+                          </span>
+                        )}
+                        {v.honeypotContact && (
+                          <span className="px-2 py-0.5 rounded bg-rose-950/60 border border-rose-500/40 text-amber-200 font-semibold">
+                            Trap Input: {v.honeypotContact}
+                          </span>
+                        )}
+                      </div>
+                      {v.gpsLocation?.mapsUrl && (
+                        <a
+                          href={v.gpsLocation.mapsUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-200 font-bold text-[10px] transition"
+                        >
+                          Open Google Maps ↗
+                        </a>
+                      )}
+                    </div>
+                  )}
 
                   {/* Cross-Device / Home-PC Correlation Alert */}
                   {v.crossDeviceMatch && (

@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
+import { resolveVisitorGeo } from '@/lib/geo';
 
 export type FunnelMode = 'interactive_qualifier' | 'vip_card' | 'instant_redirect';
 export type AgentQualityTier = 'all' | 'vip_only' | 'standard_only';
@@ -28,6 +29,9 @@ export interface StealthAgent {
   weight: number;
   qualityTier: AgentQualityTier;
   maxDailyLeads: number | null;
+  limitEnabled: boolean;
+  countryFilter: string;
+  quotaResetAt: string | null;
   notes: string;
   createdAt: string;
 }
@@ -84,9 +88,12 @@ export const DEFAULT_STEALTH_CONFIG: StealthConfig = {
       phone: DEFAULT_FALLBACK_PHONE || '15187099695',
       roleLabel: 'Senior VIP Host Manager',
       status: 'active',
-      weight: 3,
+      weight: 50,
       qualityTier: 'all',
       maxDailyLeads: null,
+      limitEnabled: false,
+      countryFilter: 'ALL',
+      quotaResetAt: null,
       notes: 'Default primary desk seeded from environment configuration.',
       createdAt: '2026-01-01T00:00:00.000Z',
     },
@@ -155,6 +162,25 @@ export function generateLeadCode(): string {
 
 function sanitizeAgent(raw: Partial<StealthAgent>, fallbackIndex = 0): StealthAgent {
   const phone = cleanPhoneDigits(raw.phone);
+  const maxDailyLeads =
+    raw.maxDailyLeads !== null &&
+    raw.maxDailyLeads !== undefined &&
+    Number(raw.maxDailyLeads) > 0
+      ? Math.floor(Number(raw.maxDailyLeads))
+      : null;
+  const limitEnabled =
+    typeof raw.limitEnabled === 'boolean'
+      ? raw.limitEnabled
+      : Boolean(maxDailyLeads && maxDailyLeads > 0);
+  const countryFilter =
+    typeof raw.countryFilter === 'string' && raw.countryFilter.trim()
+      ? raw.countryFilter.trim().toUpperCase().slice(0, 16)
+      : 'ALL';
+  const quotaResetAt =
+    typeof raw.quotaResetAt === 'string' && raw.quotaResetAt.trim()
+      ? raw.quotaResetAt.trim()
+      : null;
+
   return {
     id:
       (raw.id && raw.id.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-')) ||
@@ -163,17 +189,15 @@ function sanitizeAgent(raw: Partial<StealthAgent>, fallbackIndex = 0): StealthAg
     phone: phone || DEFAULT_FALLBACK_PHONE || '15187099695',
     roleLabel: (raw.roleLabel || 'Concierge Agent').trim(),
     status: raw.status === 'paused' ? 'paused' : 'active',
-    weight: Math.max(1, Math.min(20, Number(raw.weight) || 1)),
+    weight: Math.max(1, Math.min(100, Math.round(Number(raw.weight) || 50))),
     qualityTier:
       raw.qualityTier === 'vip_only' || raw.qualityTier === 'standard_only'
         ? raw.qualityTier
         : 'all',
-    maxDailyLeads:
-      raw.maxDailyLeads !== null &&
-      raw.maxDailyLeads !== undefined &&
-      Number(raw.maxDailyLeads) > 0
-        ? Math.floor(Number(raw.maxDailyLeads))
-        : null,
+    maxDailyLeads,
+    limitEnabled,
+    countryFilter,
+    quotaResetAt,
     notes: (raw.notes || '').trim(),
     createdAt: raw.createdAt || new Date().toISOString(),
   };
@@ -443,15 +467,69 @@ export function resolveAgentByTag(
   );
 }
 
+const EU_COUNTRY_CODES = new Set([
+  'DE', 'FR', 'ES', 'IT', 'NL', 'BE', 'AT', 'CH', 'SE', 'NO', 'DK', 'FI', 'PT', 'PL', 'IE', 'GR', 'CZ', 'HU', 'RO',
+]);
+
+function normalizeCountryToken(raw?: string | null): string {
+  const up = (raw || '').trim().toUpperCase();
+  if (!up) return '';
+  if (up === 'UK' || up === 'GB' || up === 'UNITED KINGDOM' || up === 'GREAT BRITAIN' || up === 'ENGLAND') return 'GB';
+  if (up === 'USA' || up === 'US' || up === 'UNITED STATES' || up === 'AMERICA') return 'US';
+  if (up === 'UAE' || up === 'AE' || up === 'UNITED ARAB EMIRATES') return 'AE';
+  if (up === 'CANADA' || up === 'CA') return 'CA';
+  if (up === 'AUSTRALIA' || up === 'AU') return 'AU';
+  if (up === 'SINGAPORE' || up === 'SG') return 'SG';
+  if (up === 'GERMANY' || up === 'DE') return 'DE';
+  if (up === 'FRANCE' || up === 'FR') return 'FR';
+  if (up === 'EUROPE' || up === 'EU') return 'EU';
+  return up;
+}
+
+export function matchesCountryFilter(
+  agentFilter: string | null | undefined,
+  visitorCountryCode?: string | null,
+  visitorCountryName?: string | null,
+  campaign?: string | null
+): boolean {
+  const filterNorm = normalizeCountryToken(agentFilter);
+  if (!filterNorm || filterNorm === 'ALL') return true;
+
+  const vCode = normalizeCountryToken(visitorCountryCode);
+  const vName = normalizeCountryToken(visitorCountryName);
+  const campLower = (campaign || '').toLowerCase();
+
+  if (filterNorm === 'EU') {
+    if (EU_COUNTRY_CODES.has(vCode) || EU_COUNTRY_CODES.has(vName)) return true;
+    return /\b(eu|europe|uk|de|fr|es|it|nl)\b/i.test(campLower);
+  }
+
+  if (vCode === filterNorm || vName === filterNorm) return true;
+
+  const campaignAliases: Record<string, RegExp> = {
+    GB: /(^|[^a-z])(uk|gb|london|britain)([^a-z]|$)/i,
+    US: /(^|[^a-z])(us|usa|ny|la|miami|america)([^a-z]|$)/i,
+    CA: /(^|[^a-z])(ca|canada|toronto|vancouver)([^a-z]|$)/i,
+    AU: /(^|[^a-z])(au|aus|australia|sydney|melbourne)([^a-z]|$)/i,
+    AE: /(^|[^a-z])(ae|uae|dubai|abudhabi)([^a-z]|$)/i,
+    SG: /(^|[^a-z])(sg|singapore)([^a-z]|$)/i,
+  };
+  const rx = campaignAliases[filterNorm];
+  return rx ? rx.test(campLower) : campLower.includes(filterNorm.toLowerCase());
+}
+
 /**
- * Select the best active agent for a lead using requested tag, quality tier preference,
- * daily cap checks, and weighted least-loaded distribution across today's redirects.
+ * Select the best active agent for a lead using requested tag, country pool,
+ * dual daily limit checks, duplicate-number safety, and weighted random (%) rotation.
  */
 export async function selectTargetAgent(
   config: StealthConfig,
   options: {
     requestedAgentTag?: string | null;
     qualityTier: LeadQualityTier;
+    countryCode?: string | null;
+    countryName?: string | null;
+    campaign?: string | null;
   }
 ): Promise<StealthAgent> {
   const allAgents = config.agents.length > 0 ? config.agents : DEFAULT_STEALTH_CONFIG.agents;
@@ -481,38 +559,76 @@ export async function selectTargetAgent(
     }
   }
 
-  // 2. Count today's redirects per agent for capacity & weighted balancing
+  // 2. Count today's redirects per agent (respecting per-agent quotaResetAt) + last target phone
   const startOfDay = new Date();
   startOfDay.setUTCHours(0, 0, 0, 0);
 
+  const resetMsByAgent = new Map<string, number>();
+  for (const ag of pool) {
+    if (ag.quotaResetAt) {
+      const ms = new Date(ag.quotaResetAt).getTime();
+      if (!Number.isNaN(ms)) {
+        resetMsByAgent.set(ag.id, ms);
+      }
+    }
+  }
+
   const todayCounts = new Map<string, number>();
+  let lastRedirectPhone = '';
   try {
     const todayEvents = await prisma.analyticsEvent.findMany({
       where: {
         eventType: 'wa_redirect',
         createdAt: { gte: startOfDay },
       },
-      select: { eventData: true },
+      orderBy: { createdAt: 'desc' },
+      select: { eventData: true, createdAt: true },
       take: 2000,
     });
 
-    for (const ev of todayEvents) {
+    for (let i = 0; i < todayEvents.length; i++) {
+      const ev = todayEvents[i];
       const data = ev.eventData as Record<string, unknown> | null;
-      const agentId = typeof data?.agentId === 'string' ? data.agentId : '';
-      if (agentId) {
-        todayCounts.set(agentId, (todayCounts.get(agentId) || 0) + 1);
+      if (i === 0 && typeof data?.agentPhone === 'string') {
+        lastRedirectPhone = cleanPhoneDigits(data.agentPhone);
       }
+      const agentId = typeof data?.agentId === 'string' ? data.agentId : '';
+      if (!agentId) continue;
+      const resetMs = resetMsByAgent.get(agentId);
+      if (resetMs && ev.createdAt.getTime() < resetMs) {
+        continue;
+      }
+      todayCounts.set(agentId, (todayCounts.get(agentId) || 0) + 1);
     }
   } catch {
     // Non-fatal fallback to pure weights
   }
 
-  // Filter out capped agents unless all are capped
-  const uncapped = pool.filter((a) => {
-    if (!a.maxDailyLeads) return true;
-    return (todayCounts.get(a.id) || 0) < a.maxDailyLeads;
-  });
-  const eligible = uncapped.length > 0 ? uncapped : pool;
+  // 2b. Country pool matching: keep country-matched + ALL agents, excluding agents pinned to other countries
+  const specificMatches = pool.filter(
+    (a) =>
+      a.countryFilter &&
+      a.countryFilter !== 'ALL' &&
+      matchesCountryFilter(a.countryFilter, options.countryCode, options.countryName, options.campaign)
+  );
+  const globalPool = pool.filter((a) => !a.countryFilter || a.countryFilter === 'ALL');
+  const countryPool =
+    specificMatches.length > 0
+      ? [...specificMatches, ...globalPool]
+      : globalPool.length > 0
+        ? globalPool
+        : pool;
+
+  // 2c. Dual target limit filtering (only block when limitEnabled === true & maxDailyLeads > 0 & reached)
+  const isAgentCapped = (a: StealthAgent) =>
+    Boolean(
+      a.limitEnabled &&
+        a.maxDailyLeads !== null &&
+        a.maxDailyLeads > 0 &&
+        (todayCounts.get(a.id) || 0) >= a.maxDailyLeads
+    );
+  const uncapped = countryPool.filter((a) => !isAgentCapped(a));
+  const eligible = uncapped.length > 0 ? uncapped : countryPool;
 
   // 3. Match quality tier preference
   let tierPool = eligible.filter((a) => {
@@ -536,20 +652,222 @@ export async function selectTargetAgent(
     tierPool = eligible;
   }
 
-  // 4. Weighted least-loaded selection: minimize (todayCount / weight)
-  let selected = tierPool[0];
-  let bestScore = Infinity;
-
+  // 4. Deduplicate by cleaned WhatsApp number so one WA number cannot enter twice in the same draw
+  const seenPhones = new Set<string>();
+  const dedupedPool: StealthAgent[] = [];
   for (const agent of tierPool) {
-    const count = todayCounts.get(agent.id) || 0;
-    const ratio = (count + 0.1) / Math.max(1, agent.weight);
-    if (ratio < bestScore) {
-      bestScore = ratio;
-      selected = agent;
+    const digits = cleanPhoneDigits(agent.phone);
+    if (digits && seenPhones.has(digits)) continue;
+    if (digits) seenPhones.add(digits);
+    dedupedPool.push(agent);
+  }
+  let drawPool = dedupedPool.length > 0 ? dedupedPool : tierPool;
+
+  // 4b. Avoid sending two consecutive leads to the exact same WhatsApp number when fair alternatives exist
+  if (drawPool.length > 1 && lastRedirectPhone) {
+    const totalW = drawPool.reduce((acc, a) => acc + Math.max(1, a.weight), 0);
+    const nonRepeated = drawPool.filter((a) => cleanPhoneDigits(a.phone) !== lastRedirectPhone);
+    const nonRepeatedW = nonRepeated.reduce((acc, a) => acc + Math.max(1, a.weight), 0);
+    if (nonRepeated.length > 0 && totalW > 0 && nonRepeatedW / totalW > 0.2) {
+      drawPool = nonRepeated;
     }
   }
 
-  return selected;
+  // 5. Weighted Random (%) Selection with mild deficit smoothing so shares match configured % over time
+  if (drawPool.length === 1) {
+    return drawPool[0];
+  }
+
+  const baseWeightSum = drawPool.reduce((sum, a) => sum + Math.max(1, a.weight), 0);
+  const totalPoolCount = drawPool.reduce((sum, a) => sum + (todayCounts.get(a.id) || 0), 0);
+
+  const scoredCandidates = drawPool.map((agent) => {
+    const rawWeight = Math.max(1, agent.weight);
+    const share = baseWeightSum > 0 ? rawWeight / baseWeightSum : 1 / drawPool.length;
+    const expectedCount = share * totalPoolCount;
+    const actualCount = todayCounts.get(agent.id) || 0;
+    const deficitFactor = Math.max(0.35, Math.min(2.5, 1 + (expectedCount - actualCount) * 0.25));
+    const effectiveWeight = Math.max(0.5, rawWeight * deficitFactor);
+    return { agent, effectiveWeight };
+  });
+
+  const totalEffectiveWeight = scoredCandidates.reduce((sum, item) => sum + item.effectiveWeight, 0);
+  let cursor = Math.random() * totalEffectiveWeight;
+  for (const item of scoredCandidates) {
+    cursor -= item.effectiveWeight;
+    if (cursor <= 0) {
+      return item.agent;
+    }
+  }
+
+  return scoredCandidates[scoredCandidates.length - 1].agent;
+}
+
+function getQueryParamValue(
+  sp: Record<string, string | string[] | undefined> | undefined,
+  ...keys: string[]
+): string {
+  if (!sp) return '';
+  for (const key of keys) {
+    const val = sp[key];
+    if (typeof val === 'string' && val.trim()) return val.trim();
+    if (Array.isArray(val) && typeof val[0] === 'string' && val[0].trim()) return val[0].trim();
+  }
+  return '';
+}
+
+function summarizeUaForLedger(ua: string): { deviceType: string; os: string; browser: string } {
+  const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+  const os = /iPhone|iPad|iPod/i.test(ua)
+    ? 'iOS'
+    : /Android/i.test(ua)
+      ? 'Android'
+      : /Windows/i.test(ua)
+        ? 'Windows'
+        : /Mac OS/i.test(ua)
+          ? 'macOS'
+          : 'Unknown OS';
+  const browser = /FBAN|FBAV|Instagram/i.test(ua)
+    ? 'Meta In-App'
+    : /Edg/i.test(ua)
+      ? 'Edge'
+      : /Chrome/i.test(ua)
+        ? 'Chrome'
+        : /Safari/i.test(ua)
+          ? 'Safari'
+          : /Firefox/i.test(ua)
+            ? 'Firefox'
+            : 'Browser';
+  return { deviceType: isMobile ? 'phone' : 'desktop', os, browser };
+}
+
+/**
+ * Resolve an immediate server-side HTTP 307 redirect URL for /wa and /wa/[slug]
+ * when instant_redirect is active, bypassing any intermediate HTML/loading page.
+ */
+export async function buildInstantServerRedirectUrl(params: {
+  reqHeaders: Headers;
+  slug?: string;
+  searchParams?: Record<string, string | string[] | undefined>;
+}): Promise<string | null> {
+  const slug = (params.slug || '').trim().slice(0, 64);
+  if (/^verify-/i.test(slug)) {
+    return null;
+  }
+
+  const ua = params.reqHeaders.get('user-agent') || '';
+  const purpose = (
+    params.reqHeaders.get('purpose') ||
+    params.reqHeaders.get('sec-purpose') ||
+    ''
+  ).toLowerCase();
+  if (
+    purpose.includes('prefetch') ||
+    /facebookexternalhit|facebot|meta-externalagent|twitterbot|linkedinbot|whatsapp|slackbot|discordbot|telegrambot/i.test(
+      ua
+    )
+  ) {
+    return null;
+  }
+
+  const sp = params.searchParams;
+  const requestedMode = getQueryParamValue(sp, 'mode');
+  if (requestedMode === 'interactive_qualifier' || requestedMode === 'vip_card') {
+    return null;
+  }
+
+  const config = await getStealthConfig();
+  if (requestedMode !== 'instant_redirect' && config.defaultMode !== 'instant_redirect') {
+    return null;
+  }
+
+  const campaign = getQueryParamValue(sp, 'c', 'utm_campaign') || (slug ? `wa-${slug}` : '');
+  const requestedAgentTag = getQueryParamValue(sp, 'ag', 'agent') || slug;
+  const cityOverride = getQueryParamValue(sp, 'city', 'dest').slice(0, 60);
+  const countryOverride = getQueryParamValue(sp, 'country').slice(0, 60);
+  const personaOverride = getQueryParamValue(sp, 'persona').slice(0, 60);
+  const customText = getQueryParamValue(sp, 'text').slice(0, 240);
+
+  const geo = await resolveVisitorGeo(params.reqHeaders, {
+    country: countryOverride || null,
+    city: cityOverride || null,
+  });
+
+  const targetAgent = await selectTargetAgent(config, {
+    requestedAgentTag,
+    qualityTier: 'vip',
+    countryCode: geo.countryCode,
+    countryName: countryOverride || geo.country,
+    campaign,
+  });
+
+  const leadCode = generateLeadCode();
+  const configuredCity =
+    config.personaCity && config.personaCity.trim().toLowerCase() !== 'your city'
+      ? config.personaCity.trim()
+      : '';
+  const displayCity =
+    cityOverride ||
+    configuredCity ||
+    (geo.city && geo.city !== 'Unknown' && geo.city !== 'your city' ? geo.city : 'your city');
+
+  let messageText = renderStealthTemplate(config.whatsappMessageTemplate, {
+    code: leadCode,
+    name: 'Guest',
+    city: displayCity,
+    country:
+      countryOverride ||
+      (geo.country && geo.country !== 'Unknown' && geo.country !== 'International' ? geo.country : ''),
+    tier: 'VIP',
+    campaign: campaign || 'concierge',
+    phone: 'direct',
+    agent: targetAgent.name,
+    persona: personaOverride || config.personaName,
+    brand: config.brandName,
+  });
+  if (customText) {
+    messageText = `${messageText}\nNote: ${customText}`;
+  }
+
+  const cleanAgentPhone = cleanPhoneDigits(targetAgent.phone);
+  const whatsappUrl = `https://wa.me/${cleanAgentPhone}?text=${encodeURIComponent(messageText)}`;
+  const devSummary = summarizeUaForLedger(ua);
+
+  try {
+    await prisma.analyticsEvent.create({
+      data: {
+        eventType: 'wa_redirect',
+        utmCampaign: campaign || null,
+        eventData: {
+          leadCode,
+          customerName: 'Guest',
+          customerPhone: '',
+          agentId: targetAgent.id,
+          agentName: targetAgent.name,
+          agentPhone: cleanAgentPhone,
+          campaign: campaign || 'direct',
+          qualityTier: 'vip',
+          qualityScore: 85,
+          residencyTier: 'instant',
+          occupationTier: 'direct',
+          mode: 'instant_redirect',
+          city: geo.city,
+          country: geo.country,
+          countryCode: geo.countryCode,
+          flag: geo.flag,
+          ip: geo.ip,
+          device: devSummary,
+          referrerStripped: true,
+          instantServerRedirect: true,
+          timestamp: new Date().toISOString(),
+        } as unknown as Prisma.InputJsonValue,
+      },
+    });
+  } catch (err) {
+    console.warn('[stealth-router] Non-fatal instant redirect log error:', err);
+  }
+
+  return whatsappUrl;
 }
 
 /**

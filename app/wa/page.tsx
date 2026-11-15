@@ -1,5 +1,10 @@
 import type { Metadata } from 'next';
+import { headers } from 'next/headers';
+import { redirect } from 'next/navigation';
 import WhatsAppLandingCard from '@/components/WhatsAppLandingCard';
+import { buildInstantServerRedirectUrl } from '@/lib/stealth-router';
+
+export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = {
   title: 'WhatsApp Chat | City Host',
@@ -20,6 +25,18 @@ export const metadata: Metadata = {
   },
 };
 
-export default function WaDirectPage() {
+export default async function WaDirectPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const sp = await searchParams;
+  const redirectUrl = await buildInstantServerRedirectUrl({
+    reqHeaders: await headers(),
+    searchParams: sp,
+  });
+  if (redirectUrl) {
+    redirect(redirectUrl);
+  }
   return <WhatsAppLandingCard />;
 }

@@ -200,6 +200,9 @@ export async function POST(req: NextRequest) {
     const targetAgent = await selectTargetAgent(config, {
       requestedAgentTag,
       qualityTier,
+      countryCode: geo.countryCode,
+      countryName: countryOverride || geo.country,
+      campaign,
     });
 
     const leadCode = generateLeadCode();
