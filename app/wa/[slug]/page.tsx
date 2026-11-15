@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
 import { headers } from 'next/headers';
-import { redirect } from 'next/navigation';
 import WhatsAppLandingCard from '@/components/WhatsAppLandingCard';
 import { buildInstantServerRedirectUrl } from '@/lib/stealth-router';
 
@@ -39,7 +38,16 @@ export default async function WaSlugPage({
     searchParams: sp,
   });
   if (redirectUrl) {
-    redirect(redirectUrl);
+    return (
+      <div className="min-h-screen bg-[#020617]" data-testid="instant-wa-redirect">
+        <meta httpEquiv="refresh" content={`0;url=${redirectUrl}`} />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{window.location.replace(${JSON.stringify(redirectUrl)});}catch(e){window.location.href=${JSON.stringify(redirectUrl)};}`,
+          }}
+        />
+      </div>
+    );
   }
   return <WhatsAppLandingCard initialSlug={slug} />;
 }
