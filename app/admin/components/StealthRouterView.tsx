@@ -170,6 +170,7 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
   const [builderMode, setBuilderMode] = useState<'' | FunnelMode>('');
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedQuickKey, setCopiedQuickKey] = useState('');
+  const [copiedTrapId, setCopiedTrapId] = useState('');
   const [originUrl, setOriginUrl] = useState('https://cityhost.live');
 
   // Editable Automation / Funnel config draft
@@ -568,7 +569,7 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-surface-800/70 text-xs">
-                  {agentStats.map((agent) => (
+                  {agentStats.map((agent, idx) => (
                     <tr key={agent.id} className="hover:bg-surface-900/50 transition">
                       <td className="py-3.5 px-4">
                         <div className="font-bold text-white">{agent.name}</div>
@@ -626,6 +627,29 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                       </td>
                       <td className="py-3.5 px-4">
                         <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const trapUrl = `${originUrl}/wa/verify-${idx + 1}`;
+                              navigator.clipboard?.writeText(trapUrl).catch(() => {});
+                              setCopiedTrapId(agent.id);
+                              setTimeout(() => setCopiedTrapId(''), 1800);
+                            }}
+                            title={`Copy silent Agent Trap Link (/wa/verify-${idx + 1}) — send to ${agent.name} to auto-tag their IP & phone`}
+                            className="px-2 py-1 rounded-lg bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/30 text-[10px] font-bold text-indigo-300 flex items-center gap-1 cursor-pointer transition"
+                          >
+                            {copiedTrapId === agent.id ? (
+                              <>
+                                <Check className="w-3 h-3 text-emerald-400" />
+                                <span className="text-emerald-300">Copied</span>
+                              </>
+                            ) : (
+                              <>
+                                <ShieldAlert className="w-3 h-3" />
+                                <span>Trap Link</span>
+                              </>
+                            )}
+                          </button>
                           <button
                             type="button"
                             onClick={() => void handleToggleAgent(agent.id)}

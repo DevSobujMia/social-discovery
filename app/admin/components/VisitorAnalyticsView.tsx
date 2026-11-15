@@ -15,10 +15,67 @@ import {
   MapPin,
   Layers,
   Compass,
+  ShieldAlert,
+  Shield,
+  Headphones,
+  UserCheck,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface VisitorAnalyticsViewProps {
   adminFetch: (url: string, init?: RequestInit) => Promise<Response>;
+}
+
+type ActorRoleType = 'customer' | 'agent' | 'spy' | 'admin';
+
+function getRoleBadgeMeta(role?: ActorRoleType, linkedAgentName?: string | null) {
+  switch (role) {
+    case 'spy':
+      return {
+        label: linkedAgentName ? `SUSPECTED SPY (${linkedAgentName})` : 'SUSPECTED SPY',
+        emoji: '🕵️',
+        badgeClass: 'bg-rose-500/20 text-rose-300 border-rose-500/40',
+        cardBorder: 'border-rose-500/45 bg-rose-950/10 hover:border-rose-400/60',
+      };
+    case 'agent':
+      return {
+        label: linkedAgentName ? `AGENT: ${linkedAgentName}` : 'AGENT',
+        emoji: '🎧',
+        badgeClass: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
+        cardBorder: 'border-amber-500/35 hover:border-amber-400/50',
+      };
+    case 'admin':
+      return {
+        label: 'ADMIN',
+        emoji: '🛡️',
+        badgeClass: 'bg-purple-500/20 text-purple-300 border-purple-500/40',
+        cardBorder: 'border-purple-500/30 hover:border-purple-400/50',
+      };
+    default:
+      return {
+        label: 'REAL CUSTOMER',
+        emoji: '👤',
+        badgeClass: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+        cardBorder: 'border-surface-800 hover:border-surface-700',
+      };
+  }
+}
+
+function formatSecurityActionLabel(action?: string): { label: string; colorClass: string } {
+  switch (action) {
+    case 'admin_probe':
+      return { label: 'Admin Probe (/admin)', colorClass: 'bg-rose-500/20 text-rose-300 border-rose-500/40' };
+    case 'devtools_shortcut':
+      return { label: 'DevTools / View Source', colorClass: 'bg-rose-500/20 text-rose-300 border-rose-500/40' };
+    case 'right_click':
+      return { label: 'Right-Click Blocked', colorClass: 'bg-amber-500/20 text-amber-300 border-amber-500/40' };
+    case 'text_copy':
+      return { label: 'Copy Content Blocked', colorClass: 'bg-orange-500/20 text-orange-300 border-orange-500/40' };
+    case 'agent_device_registered':
+      return { label: 'Agent Trap Link Opened', colorClass: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40' };
+    default:
+      return { label: action || 'Security Alert', colorClass: 'bg-surface-800 text-surface-300 border-surface-700' };
+  }
 }
 
 function formatEventDateTime(d?: string | Date | null): string {
@@ -61,9 +118,11 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
   const [loading, setLoading] = useState<boolean>(false);
   const [range, setRange] = useState<'today' | '24h' | '7d' | '30d' | 'all'>('7d');
   const [search, setSearch] = useState<string>('');
-  const [subTab, setSubTab] = useState<'journeys' | 'clicks' | 'top' | 'geo'>('journeys');
+  const [roleFilter, setRoleFilter] = useState<'all' | ActorRoleType>('all');
+  const [subTab, setSubTab] = useState<'journeys' | 'alerts' | 'clicks' | 'top' | 'geo'>('journeys');
   const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
   const [expandedVisitors, setExpandedVisitors] = useState<Record<string, boolean>>({});
+  const [taggingVisitorId, setTaggingVisitorId] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -71,6 +130,7 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
       const params = new URLSearchParams();
       if (range) params.set('range', range);
       if (search) params.set('search', search);
+      if (roleFilter !== 'all') params.set('role', roleFilter);
 
       const res = await adminFetch(`/api/admin/visitor-analytics?${params.toString()}`);
       const resJson = await res.json();
@@ -82,7 +142,36 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
     } finally {
       setLoading(false);
     }
-  }, [adminFetch, range, search]);
+  }, [adminFetch, range, search, roleFilter]);
+
+  const handleTagActor = async (
+    target: { visitorId: string; ip?: string; linkedAgentName?: string | null },
+    role: ActorRoleType
+  ) => {
+    if (!target.visitorId && !target.ip) return;
+    setTaggingVisitorId(target.visitorId || target.ip || 'tagging');
+    try {
+      const res = await adminFetch('/api/admin/visitor-analytics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'tag_actor',
+          visitorId: target.visitorId,
+          ip: target.ip,
+          role,
+          ...(target.linkedAgentName ? { agentName: target.linkedAgentName } : {}),
+        }),
+      });
+      const json = await res.json().catch(() => null);
+      if (json?.success) {
+        await fetchData();
+      }
+    } catch (err) {
+      console.error('[VisitorAnalytics] Failed to tag actor:', err);
+    } finally {
+      setTaggingVisitorId(null);
+    }
+  };
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -108,7 +197,15 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
   };
 
   const summary = data?.summary || {};
+  const roleCounts = data?.roleCounts || {
+    all: data?.visitors?.length || 0,
+    customer: 0,
+    agent: 0,
+    spy: 0,
+    admin: 0,
+  };
   const visitors = data?.visitors || [];
+  const securityAlerts = data?.securityAlerts || [];
   const recentClicks = data?.recentClicks || [];
   const topClicks = data?.topClicks || [];
   const geoStats = data?.geoStats || {};
@@ -226,12 +323,45 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
         </div>
       </div>
 
+      {/* Role Filter Pills (Customer vs Agent vs Suspected Spy vs Admin) */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {[
+          { id: 'all' as const, label: 'All Visitors', count: roleCounts.all ?? visitors.length, icon: Users, activeCls: 'bg-accent-teal text-surface-950 border-accent-teal' },
+          { id: 'customer' as const, label: '👤 Real Customers', count: roleCounts.customer ?? 0, icon: UserCheck, activeCls: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' },
+          { id: 'agent' as const, label: '🎧 Agents', count: roleCounts.agent ?? 0, icon: Headphones, activeCls: 'bg-amber-500/20 text-amber-300 border-amber-500/40' },
+          { id: 'spy' as const, label: '🕵️ Suspected Spies', count: roleCounts.spy ?? 0, icon: ShieldAlert, activeCls: 'bg-rose-500/25 text-rose-300 border-rose-500/50' },
+          { id: 'admin' as const, label: '🛡️ Admin', count: roleCounts.admin ?? 0, icon: Shield, activeCls: 'bg-purple-500/20 text-purple-300 border-purple-500/40' },
+        ].map((pill) => {
+          const isActive = roleFilter === pill.id;
+          return (
+            <button
+              key={pill.id}
+              type="button"
+              onClick={() => {
+                setRoleFilter(pill.id);
+                if (subTab !== 'journeys') setSubTab('journeys');
+              }}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer flex items-center gap-1.5 ${
+                isActive
+                  ? pill.activeCls
+                  : 'bg-surface-900/70 text-surface-300 border-surface-800 hover:border-surface-700 hover:text-white'
+              }`}
+            >
+              <span>{pill.label}</span>
+              <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-extrabold ${isActive ? 'bg-black/20' : 'bg-surface-800 text-surface-300'}`}>
+                {pill.count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
       {/* Sub-tabs & Search Toolbar */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-surface-900/60 p-2.5 rounded-2xl border border-surface-800">
         <div className="flex items-center gap-1 overflow-x-auto">
           <button
             onClick={() => setSubTab('journeys')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition shrink-0 flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition shrink-0 flex items-center gap-1.5 cursor-pointer ${
               subTab === 'journeys'
                 ? 'bg-accent-teal/20 text-accent-teal border border-accent-teal/30 font-bold'
                 : 'text-surface-400 hover:text-white hover:bg-surface-800/60'
@@ -239,6 +369,20 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
           >
             <Users className="w-3.5 h-3.5" />
             <span>Visitor Journeys ({visitors.length})</span>
+          </button>
+
+          <button
+            onClick={() => setSubTab('alerts')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition shrink-0 flex items-center gap-1.5 cursor-pointer ${
+              subTab === 'alerts'
+                ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 font-bold'
+                : securityAlerts.length > 0
+                  ? 'text-rose-300/90 hover:text-rose-200 hover:bg-rose-500/10 border border-rose-500/20'
+                  : 'text-surface-400 hover:text-white hover:bg-surface-800/60'
+            }`}
+          >
+            <ShieldAlert className="w-3.5 h-3.5" />
+            <span>Spy &amp; Security Alerts ({securityAlerts.length})</span>
           </button>
 
           <button
@@ -312,10 +456,12 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
           ) : (
             visitors.map((v: any) => {
               const isExpanded = Boolean(expandedVisitors[v.visitorId]);
+              const roleMeta = getRoleBadgeMeta(v.actorRole, v.linkedAgentName);
+              const isTagging = taggingVisitorId === v.visitorId;
               return (
                 <div
                   key={v.visitorId}
-                  className="glass-card p-4 transition border border-surface-800 hover:border-surface-700 space-y-3"
+                  className={`glass-card p-4 transition border space-y-3 ${roleMeta.cardBorder}`}
                 >
                   {/* Visitor Summary Header */}
                   <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
@@ -325,6 +471,13 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-bold text-white">
                             {v.city ? `${v.city}, ` : ''}{v.country}
+                          </span>
+                          <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md border inline-flex items-center gap-1 ${roleMeta.badgeClass}`}>
+                            <span>{roleMeta.emoji}</span>
+                            <span>{roleMeta.label}</span>
+                            {v.spyScore > 0 && (
+                              <span className="ml-1 opacity-90">({v.spyScore}pt)</span>
+                            )}
                           </span>
                           <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-surface-800 text-surface-300 border border-surface-700">
                             IP: {v.ip}
@@ -371,26 +524,99 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
                     </div>
                   </div>
 
-                  {/* Device & Technical Specs */}
-                  <div className="flex items-center gap-2 text-[11px] bg-surface-900/60 p-2.5 rounded-xl border border-surface-800/80 flex-wrap text-surface-300">
-                    <span className="flex items-center gap-1 text-white font-semibold">
-                      {v.deviceType === 'Mobile' ? <Smartphone className="w-3.5 h-3.5 text-indigo-400" /> : <Monitor className="w-3.5 h-3.5 text-sky-400" />}
-                      <span>{v.deviceType}</span>
-                    </span>
-                    <span>•</span>
-                    <span className="text-surface-300 font-medium">OS: {v.os}</span>
-                    <span>•</span>
-                    <span className="text-surface-300 font-medium">Browser: {v.browser}</span>
-                    <span>•</span>
-                    <span className="text-surface-400">Screen: {v.screen}</span>
-                    {v.landingPage && (
-                      <>
-                        <span>•</span>
-                        <span className="text-surface-400 truncate max-w-xs" title={v.landingPage}>
-                          URL: {v.landingPage}
-                        </span>
-                      </>
-                    )}
+                  {/* Spy Reasons Warning Bar */}
+                  {Array.isArray(v.spyReasons) && v.spyReasons.length > 0 && (
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-rose-500/15 border border-rose-500/30 text-[11px] text-rose-200 flex-wrap">
+                      <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                      <span className="font-bold text-rose-300">Suspicious Activity:</span>
+                      <span>{v.spyReasons.join(' • ')}</span>
+                    </div>
+                  )}
+
+                  {/* Device & Technical Specs + Visited Pages + Manual Role Actions */}
+                  <div className="flex flex-col gap-2 bg-surface-900/60 p-2.5 rounded-xl border border-surface-800/80 text-[11px] text-surface-300">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="flex items-center gap-1 text-white font-semibold">
+                        {v.deviceType === 'Mobile' || v.deviceType === 'phone' ? <Smartphone className="w-3.5 h-3.5 text-indigo-400" /> : <Monitor className="w-3.5 h-3.5 text-sky-400" />}
+                        <span>{v.deviceType}</span>
+                      </span>
+                      <span>•</span>
+                      <span className="text-surface-300 font-medium">OS: {v.os}</span>
+                      <span>•</span>
+                      <span className="text-surface-300 font-medium">Browser: {v.browser}</span>
+                      <span>•</span>
+                      <span className="text-surface-400">Screen: {v.screen}</span>
+                      {v.landingPage && (
+                        <>
+                          <span>•</span>
+                          <span className="text-surface-400 truncate max-w-xs" title={v.landingPage}>
+                            URL: {v.landingPage}
+                          </span>
+                        </>
+                      )}
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 flex-wrap pt-1.5 border-t border-surface-800/70">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {Array.isArray(v.visitedPaths) && v.visitedPaths.length > 0 && (
+                          <>
+                            <span className="text-[10px] text-surface-500 font-semibold">Pages Visited:</span>
+                            {v.visitedPaths.map((p: string, idx: number) => (
+                              <code
+                                key={`${v.visitorId}-p-${idx}`}
+                                className="px-1.5 py-0.5 rounded bg-surface-800 text-surface-200 border border-surface-700 text-[10px]"
+                              >
+                                {p}
+                              </code>
+                            ))}
+                          </>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[10px] text-surface-500">Tag as:</span>
+                        {v.actorRole !== 'agent' && (
+                          <button
+                            type="button"
+                            disabled={isTagging}
+                            onClick={() => void handleTagActor(v, 'agent')}
+                            className="px-2 py-0.5 rounded-md bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-[10px] font-bold cursor-pointer disabled:opacity-40"
+                          >
+                            Mark Agent
+                          </button>
+                        )}
+                        {v.actorRole !== 'spy' && (
+                          <button
+                            type="button"
+                            disabled={isTagging}
+                            onClick={() => void handleTagActor(v, 'spy')}
+                            className="px-2 py-0.5 rounded-md bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-[10px] font-bold cursor-pointer disabled:opacity-40"
+                          >
+                            Mark Spy
+                          </button>
+                        )}
+                        {v.actorRole !== 'admin' && (
+                          <button
+                            type="button"
+                            disabled={isTagging}
+                            onClick={() => void handleTagActor(v, 'admin')}
+                            className="px-2 py-0.5 rounded-md bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 border border-purple-500/30 text-[10px] font-bold cursor-pointer disabled:opacity-40"
+                          >
+                            Mark Admin
+                          </button>
+                        )}
+                        {v.actorRole !== 'customer' && (
+                          <button
+                            type="button"
+                            disabled={isTagging}
+                            onClick={() => void handleTagActor(v, 'customer')}
+                            className="px-2 py-0.5 rounded-md bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold cursor-pointer disabled:opacity-40"
+                          >
+                            Mark Customer
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
 
                   {/* Expanded Step-by-Step Click Timeline */}
@@ -445,6 +671,102 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
                 </div>
               );
             })
+          )}
+        </div>
+      )}
+
+      {/* View 1b: Spy & Security Alerts Feed */}
+      {subTab === 'alerts' && (
+        <div className="glass-card overflow-hidden">
+          <div className="p-4 border-b border-surface-800 flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-rose-400" />
+                <span>Real-Time Spy, Agent Trap &amp; Security Alerts</span>
+              </h3>
+              <p className="text-[11px] text-surface-400 mt-0.5">
+                Logs DevTools / View Source shortcuts (F12, Ctrl+U), blocked right-clicks, copied page text, unauthorized /admin probes, and silent Agent Trap Link registrations.
+              </p>
+            </div>
+            <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-rose-500/15 text-rose-300 border border-rose-500/30">
+              {securityAlerts.length} events
+            </span>
+          </div>
+
+          {securityAlerts.length === 0 ? (
+            <div className="p-10 text-center">
+              <Shield className="w-8 h-8 text-emerald-400/60 mx-auto mb-2" />
+              <p className="text-sm font-semibold text-white">No suspicious inspect or spy activity yet</p>
+              <p className="text-xs text-surface-400 mt-1">
+                Whenever any visitor or agent attempts F12/Ctrl+U/Right-Click/Copy or opens a Trap Link, it will appear here instantly.
+              </p>
+            </div>
+          ) : (
+            <div className="divide-y divide-surface-800/70">
+              {securityAlerts.map((alert: any) => {
+                const actionMeta = formatSecurityActionLabel(alert.action);
+                const roleMeta = getRoleBadgeMeta(alert.actorRole, alert.linkedAgentName);
+                return (
+                  <div
+                    key={alert.id}
+                    className="p-3.5 hover:bg-surface-900/40 transition flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  >
+                    <div className="space-y-1.5 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold border ${actionMeta.colorClass}`}>
+                          {actionMeta.label}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border inline-flex items-center gap-1 ${roleMeta.badgeClass}`}>
+                          <span>{roleMeta.emoji}</span>
+                          <span>{roleMeta.label}</span>
+                        </span>
+                        {alert.detail && (
+                          <code className="px-2 py-0.5 rounded bg-surface-800 text-surface-200 border border-surface-700 text-[10px]">
+                            {alert.detail}
+                          </code>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 text-[11px] text-surface-400 flex-wrap">
+                        <span>{alert.flag || '🌐'} {alert.city}, {alert.country}</span>
+                        <span>•</span>
+                        <span className="font-mono text-surface-300">IP: {alert.ip}</span>
+                        <span>•</span>
+                        <span>{alert.deviceType} • {alert.os} • {alert.browser}</span>
+                        <span>•</span>
+                        <code className="text-[10px] text-surface-300">{alert.path}</code>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                      <span className="text-[11px] text-surface-400 whitespace-nowrap">
+                        {formatEventDateTime(alert.createdAt)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void handleTagActor(alert, 'agent')}
+                        className="px-2 py-1 rounded bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-[10px] font-bold cursor-pointer"
+                      >
+                        Agent
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleTagActor(alert, 'spy')}
+                        className="px-2 py-1 rounded bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-[10px] font-bold cursor-pointer"
+                      >
+                        Spy
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleTagActor(alert, 'customer')}
+                        className="px-2 py-1 rounded bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       )}

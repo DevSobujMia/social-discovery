@@ -1,16 +1,174 @@
 import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
-import { success, handleApiError } from '@/lib/api-helpers';
+import { error, success, handleApiError } from '@/lib/api-helpers';
 import { getCountryFlag } from '@/lib/geo';
+import {
+  getStealthConfig,
+  resolveAgentByTag,
+  saveStealthConfig,
+  type ActorRole,
+  type KnownActorRule,
+  type StealthConfig,
+} from '@/lib/stealth-router';
+
+interface VisitorSecurityAlert {
+  id: string;
+  time: Date;
+  action: string;
+  detail: string | null;
+  path: string;
+}
+
+interface SecurityAlertFeedItem {
+  id: string;
+  createdAt: Date;
+  visitorId: string;
+  ip: string;
+  country: string;
+  countryCode: string;
+  city: string;
+  flag: string;
+  deviceType: string;
+  os: string;
+  browser: string;
+  action: string;
+  detail: string | null;
+  path: string;
+  actorRole?: ActorRole;
+  actorLabel?: string;
+  linkedAgentName?: string | null;
+  spyScore?: number;
+}
+
+function classifyVisitor(
+  visitor: {
+    visitorId: string;
+    ip: string;
+    deviceType: string;
+    utmCampaign: string | null;
+    visitedPaths: string[];
+    hasAdContext: boolean;
+    probedAdmin: boolean;
+    actorHint: string | null;
+    agentTagHint: string | null;
+    securityAlerts: VisitorSecurityAlert[];
+  },
+  stealthConfig: StealthConfig,
+  ruleByVisitorId: Map<string, KnownActorRule>,
+  ruleByIp: Map<string, KnownActorRule>
+): {
+  actorRole: ActorRole;
+  actorLabel: string;
+  linkedAgentName: string | null;
+  spyScore: number;
+  spyReasons: string[];
+  isExplicitlyTagged: boolean;
+} {
+  const vidRule = ruleByVisitorId.get(visitor.visitorId);
+  const ipRule =
+    visitor.ip && visitor.ip !== 'unknown' && !visitor.ip.startsWith('127.')
+      ? ruleByIp.get(visitor.ip)
+      : undefined;
+  const explicitRule = vidRule || ipRule || null;
+
+  const resolvedTagAgent = visitor.agentTagHint
+    ? resolveAgentByTag(stealthConfig.agents, visitor.agentTagHint, { includePaused: true })
+    : null;
+  const linkedAgentName =
+    explicitRule?.agentName ||
+    resolvedTagAgent?.name ||
+    (visitor.agentTagHint ? visitor.agentTagHint : null);
+
+  let spyScore = 0;
+  const spyReasons: string[] = [];
+
+  const adminProbes = visitor.securityAlerts.filter((a) => a.action === 'admin_probe').length;
+  const devtoolsHits = visitor.securityAlerts.filter((a) => a.action === 'devtools_shortcut').length;
+  const rightClickHits = visitor.securityAlerts.filter((a) => a.action === 'right_click').length;
+  const copyHits = visitor.securityAlerts.filter((a) => a.action === 'text_copy').length;
+
+  if (adminProbes > 0 || visitor.probedAdmin) {
+    spyScore += 55;
+    spyReasons.push('Opened /admin without login');
+  }
+  if (devtoolsHits > 0) {
+    spyScore += Math.min(70, devtoolsHits * 35);
+    spyReasons.push(`DevTools / View Source shortcut (${devtoolsHits}x)`);
+  }
+  if (rightClickHits > 0) {
+    spyScore += Math.min(40, 20 + (rightClickHits - 1) * 10);
+    spyReasons.push(`Right-click inspect attempt (${rightClickHits}x)`);
+  }
+  if (copyHits > 0) {
+    spyScore += Math.min(45, 25 + (copyHits - 1) * 15);
+    spyReasons.push(`Tried copying site text (${copyHits}x)`);
+  }
+  if (
+    visitor.deviceType === 'desktop' &&
+    !visitor.hasAdContext &&
+    !visitor.utmCampaign &&
+    visitor.visitedPaths.length >= 3
+  ) {
+    spyScore += 20;
+    spyReasons.push('Desktop multi-page snooping (no ad UTM)');
+  }
+
+  let actorRole: ActorRole = 'customer';
+  let actorLabel = 'Customer';
+
+  if (explicitRule?.role === 'admin') {
+    actorRole = 'admin';
+    actorLabel = explicitRule.label || 'Admin';
+  } else if (explicitRule?.role === 'customer') {
+    actorRole = 'customer';
+    actorLabel = explicitRule.label || 'Customer (Verified)';
+  } else if (explicitRule?.role === 'spy') {
+    actorRole = 'spy';
+    actorLabel = explicitRule.label || 'Flagged Spy';
+  } else if (visitor.actorHint === 'admin') {
+    actorRole = 'admin';
+    actorLabel = 'Admin Browser';
+  } else if (spyScore >= 40) {
+    actorRole = 'spy';
+    actorLabel = linkedAgentName ? `Spy (${linkedAgentName})` : 'Suspected Spy';
+  } else if (explicitRule?.role === 'agent' || visitor.actorHint === 'agent' || linkedAgentName) {
+    actorRole = 'agent';
+    actorLabel =
+      explicitRule?.label || (linkedAgentName ? `Agent: ${linkedAgentName}` : 'Internal Agent');
+  } else if (spyScore >= 20) {
+    actorLabel = 'Customer (Watch)';
+  }
+
+  return {
+    actorRole,
+    actorLabel,
+    linkedAgentName,
+    spyScore: Math.min(100, spyScore),
+    spyReasons,
+    isExplicitlyTagged: Boolean(explicitRule),
+  };
+}
 
 export async function GET(req: NextRequest) {
   try {
-    await requireAdmin();
+    await requireAdmin(req);
 
     const { searchParams } = new URL(req.url);
     const range = searchParams.get('range') || '7d';
     const search = (searchParams.get('search') || '').trim().toLowerCase();
+    const roleFilter = (searchParams.get('role') || 'all').trim().toLowerCase();
+
+    const stealthConfig = await getStealthConfig();
+    const ruleByVisitorId = new Map<string, KnownActorRule>();
+    const ruleByIp = new Map<string, KnownActorRule>();
+    for (const rule of stealthConfig.knownActors) {
+      if (rule.matchType === 'visitorId') {
+        ruleByVisitorId.set(rule.value, rule);
+      } else if (rule.matchType === 'ip') {
+        ruleByIp.set(rule.value, rule);
+      }
+    }
 
     const now = new Date();
     let startDate: Date;
@@ -34,7 +192,7 @@ export async function GET(req: NextRequest) {
     const events = await prisma.analyticsEvent.findMany({
       where: {
         createdAt: { gte: startDate },
-        eventType: { in: ['page_view', 'click', 'ad_landing_view', 'profile_view'] },
+        eventType: { in: ['page_view', 'click', 'ad_landing_view', 'profile_view', 'security_alert'] },
       },
       orderBy: { createdAt: 'desc' },
       take: 2500,
@@ -82,6 +240,19 @@ export async function GET(req: NextRequest) {
       utmCampaign: string | null;
       pageViewsCount: number;
       clicksCount: number;
+      visitedPaths: string[];
+      hasAdContext: boolean;
+      probedAdmin: boolean;
+      actorHint: string | null;
+      agentTagHint: string | null;
+      securityAlertsCount: number;
+      securityAlerts: VisitorSecurityAlert[];
+      actorRole: ActorRole;
+      actorLabel: string;
+      linkedAgentName: string | null;
+      spyScore: number;
+      spyReasons: string[];
+      isExplicitlyTagged: boolean;
       clicks: Array<{
         id: string;
         time: Date;
@@ -102,6 +273,7 @@ export async function GET(req: NextRequest) {
     const browserMap = new Map<string, number>();
     const clickTargetMap = new Map<string, { targetText: string; section: string; targetTag: string; clicksCount: number; uniqueVisitors: Set<string>; lastClickedAt: Date }>();
     const recentClicks: any[] = [];
+    const securityAlertsFeed: SecurityAlertFeedItem[] = [];
 
     let totalPageViews = 0;
     let totalClicks = 0;
@@ -186,8 +358,94 @@ export async function GET(req: NextRequest) {
           pageViewsCount: 0,
           clicksCount: 0,
           clicks: [],
+          visitedPaths: [],
+          hasAdContext: false,
+          probedAdmin: false,
+          actorHint: null,
+          agentTagHint: null,
+          securityAlertsCount: 0,
+          securityAlerts: [],
+          actorRole: 'customer',
+          actorLabel: 'Customer',
+          linkedAgentName: null,
+          spyScore: 0,
+          spyReasons: [],
+          isExplicitlyTagged: false,
         };
         visitorMap.set(vid, visitor);
+      }
+
+      const rawPath =
+        typeof data.path === 'string' && data.path.trim()
+          ? data.path.trim()
+          : typeof data.url === 'string' && data.url.startsWith('http')
+            ? (() => {
+                try {
+                  return new URL(data.url).pathname || '/';
+                } catch {
+                  return '';
+                }
+              })()
+            : '';
+      if (rawPath && !visitor.visitedPaths.includes(rawPath) && visitor.visitedPaths.length < 25) {
+        visitor.visitedPaths.push(rawPath);
+      }
+      if (data.hasAdContext) {
+        visitor.hasAdContext = true;
+      }
+      if (data.probedAdmin) {
+        visitor.probedAdmin = true;
+      }
+      if (data.actorHint === 'admin') {
+        visitor.actorHint = 'admin';
+      } else if (!visitor.actorHint && data.actorHint) {
+        visitor.actorHint = String(data.actorHint);
+      }
+      if (!visitor.agentTagHint && (data.agentTagHint || data.agentSlug || data.agentName)) {
+        visitor.agentTagHint = String(data.agentTagHint || data.agentSlug || data.agentName);
+      }
+
+      if (ev.eventType === 'security_alert') {
+        const action = String(data.action || 'suspicious_action');
+        const detail = data.detail
+          ? String(data.detail)
+          : data.agentName
+            ? String(data.agentName)
+            : data.agentSlug
+              ? String(data.agentSlug)
+              : null;
+        const alertPath = rawPath || '/';
+
+        if (action !== 'agent_device_registered') {
+          visitor.securityAlertsCount++;
+        }
+        if (visitor.securityAlerts.length < 30) {
+          visitor.securityAlerts.push({
+            id: ev.id,
+            time: ev.createdAt,
+            action,
+            detail,
+            path: alertPath,
+          });
+        }
+        if (securityAlertsFeed.length < 100) {
+          securityAlertsFeed.push({
+            id: ev.id,
+            createdAt: ev.createdAt,
+            visitorId: vid,
+            ip,
+            country,
+            countryCode,
+            city,
+            flag,
+            deviceType: dtKey,
+            os,
+            browser: bName,
+            action,
+            detail,
+            path: alertPath,
+          });
+        }
       }
 
       if (ev.createdAt > visitor.lastActiveAt) {
@@ -263,7 +521,28 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Convert aggregated visitors to array and apply search filter
+    // Classify visitors (Customer vs Agent vs Spy vs Admin)
+    for (const v of visitorMap.values()) {
+      const classification = classifyVisitor(v, stealthConfig, ruleByVisitorId, ruleByIp);
+      v.actorRole = classification.actorRole;
+      v.actorLabel = classification.actorLabel;
+      v.linkedAgentName = classification.linkedAgentName;
+      v.spyScore = classification.spyScore;
+      v.spyReasons = classification.spyReasons;
+      v.isExplicitlyTagged = classification.isExplicitlyTagged;
+    }
+
+    for (const alertItem of securityAlertsFeed) {
+      const v = visitorMap.get(alertItem.visitorId);
+      if (v) {
+        alertItem.actorRole = v.actorRole;
+        alertItem.actorLabel = v.actorLabel;
+        alertItem.linkedAgentName = v.linkedAgentName;
+        alertItem.spyScore = v.spyScore;
+      }
+    }
+
+    // Convert aggregated visitors to array and apply search + role filters
     let visitorsList = Array.from(visitorMap.values());
 
     if (search) {
@@ -274,9 +553,23 @@ export async function GET(req: NextRequest) {
         v.country.toLowerCase().includes(search) ||
         v.os.toLowerCase().includes(search) ||
         v.browser.toLowerCase().includes(search) ||
+        v.actorLabel.toLowerCase().includes(search) ||
+        (v.linkedAgentName && v.linkedAgentName.toLowerCase().includes(search)) ||
         (v.utmCampaign && v.utmCampaign.toLowerCase().includes(search)) ||
         v.clicks.some((c) => c.targetText.toLowerCase().includes(search) || c.section.toLowerCase().includes(search))
       );
+    }
+
+    const roleCounts = {
+      all: visitorsList.length,
+      customer: visitorsList.filter((v) => v.actorRole === 'customer').length,
+      agent: visitorsList.filter((v) => v.actorRole === 'agent').length,
+      spy: visitorsList.filter((v) => v.actorRole === 'spy').length,
+      admin: visitorsList.filter((v) => v.actorRole === 'admin').length,
+    };
+
+    if (roleFilter && roleFilter !== 'all') {
+      visitorsList = visitorsList.filter((v) => v.actorRole === roleFilter);
     }
 
     // Sort visitors by most recent activity
@@ -356,10 +649,15 @@ export async function GET(req: NextRequest) {
         topCity,
         mobilePercentage: totalEventsCount > 0 ? Math.round((mobileCount / totalEventsCount) * 100) : 0,
         inAppPercentage: totalEventsCount > 0 ? Math.round((inAppCount / totalEventsCount) * 100) : 0,
+        securityAlertsCount: securityAlertsFeed.filter((a) => a.action !== 'agent_device_registered').length,
+        suspectedSpiesCount: roleCounts.spy,
+        agentsSeenCount: roleCounts.agent,
       },
+      roleCounts,
       visitors: visitorsList.slice(0, 100),
       recentClicks,
       topClicks,
+      securityAlerts: securityAlertsFeed,
       geoStats: {
         countries,
         cities,
@@ -370,6 +668,88 @@ export async function GET(req: NextRequest) {
         browserStats,
       },
     });
+  } catch (err) {
+    return handleApiError(err);
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    await requireAdmin(req);
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object') {
+      return error('Invalid request payload', 400);
+    }
+
+    const action = String(body.action || '');
+    const visitorId = typeof body.visitorId === 'string' ? body.visitorId.trim() : '';
+    const ip = typeof body.ip === 'string' ? body.ip.trim() : '';
+    const cfg = await getStealthConfig();
+    let nextRules: KnownActorRule[] = [...cfg.knownActors];
+
+    if (action === 'tag_actor') {
+      const role = body.role as ActorRole;
+      if (!['customer', 'agent', 'spy', 'admin'].includes(role)) {
+        return error('Invalid actor role', 400);
+      }
+      if (!visitorId && (!ip || ip === 'unknown')) {
+        return error('visitorId or valid ip is required', 400);
+      }
+
+      const labelInput = typeof body.label === 'string' ? body.label.trim() : '';
+      const defaultLabels: Record<ActorRole, string> = {
+        customer: 'Customer (Verified)',
+        agent: 'Internal Agent',
+        spy: 'Flagged Spy',
+        admin: 'Admin',
+      };
+      const label = labelInput || defaultLabels[role];
+      const nowIso = new Date().toISOString();
+
+      const upsert = (matchType: 'visitorId' | 'ip', value: string) => {
+        const cleanVal = value.trim();
+        if (!cleanVal) return;
+        const rule: KnownActorRule = {
+          id: `${matchType}:${cleanVal}`,
+          matchType,
+          value: cleanVal,
+          role,
+          label,
+          agentName: typeof body.agentName === 'string' && body.agentName.trim() ? body.agentName.trim() : undefined,
+          createdAt: nowIso,
+        };
+        const idx = nextRules.findIndex((r) => r.matchType === matchType && r.value === cleanVal);
+        if (idx >= 0) {
+          nextRules[idx] = rule;
+        } else {
+          nextRules.push(rule);
+        }
+      };
+
+      if (visitorId) upsert('visitorId', visitorId);
+      if (
+        ip &&
+        ip !== 'unknown' &&
+        !['127.0.0.1', '::1', 'localhost'].includes(ip)
+      ) {
+        upsert('ip', ip);
+      }
+
+      const saved = await saveStealthConfig({ knownActors: nextRules });
+      return success({ knownActors: saved.knownActors });
+    }
+
+    if (action === 'remove_actor_tag') {
+      nextRules = nextRules.filter((r) => {
+        if (visitorId && r.matchType === 'visitorId' && r.value === visitorId) return false;
+        if (ip && r.matchType === 'ip' && r.value === ip) return false;
+        return true;
+      });
+      const saved = await saveStealthConfig({ knownActors: nextRules });
+      return success({ knownActors: saved.knownActors });
+    }
+
+    return error('Unsupported action', 400);
   } catch (err) {
     return handleApiError(err);
   }

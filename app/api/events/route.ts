@@ -2,6 +2,12 @@ import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { success, handleApiError } from '@/lib/api-helpers';
 import { resolveVisitorGeo } from '@/lib/geo';
+import {
+  getStealthConfig,
+  resolveAgentByTag,
+  saveStealthConfig,
+  type KnownActorRule,
+} from '@/lib/stealth-router';
 
 // POST /api/events — track analytics events, visitors, clicks + UTM attribution
 export async function POST(req: NextRequest) {
@@ -62,7 +68,7 @@ export async function POST(req: NextRequest) {
         landing_page: ev.landingPage || ev.eventData?.url,
       };
 
-      const eventData = {
+      const eventData: Record<string, any> = {
         ...(ev.eventData || {}),
         ip: geo.ip,
         country: geo.country,
@@ -72,6 +78,26 @@ export async function POST(req: NextRequest) {
         geoSource: geo.source,
         userAgent: userAgent.slice(0, 300),
       };
+
+      const isAgentTrapEvent =
+        eventType === 'security_alert' && eventData.action === 'agent_device_registered';
+      let matchedTrapAgent: ReturnType<typeof resolveAgentByTag> = null;
+
+      if (isAgentTrapEvent) {
+        try {
+          const cfg = await getStealthConfig();
+          const slug = String(eventData.agentSlug || '').trim();
+          matchedTrapAgent = slug
+            ? resolveAgentByTag(cfg.agents, slug, { includePaused: true })
+            : null;
+          if (matchedTrapAgent) {
+            eventData.agentId = matchedTrapAgent.id;
+            eventData.agentName = matchedTrapAgent.name;
+          }
+        } catch {
+          // Non-fatal trap lookup error
+        }
+      }
 
       // Store event in database
       await prisma.analyticsEvent.create({
@@ -83,6 +109,57 @@ export async function POST(req: NextRequest) {
           utmCampaign: utm?.utm_campaign || undefined,
         },
       });
+
+      if (isAgentTrapEvent) {
+        try {
+          const cfg = await getStealthConfig();
+          const slug = String(eventData.agentSlug || '').trim();
+          const label = matchedTrapAgent
+            ? `Agent: ${matchedTrapAgent.name}`
+            : `Agent (${slug || 'trap'})`;
+          const nowIso = new Date().toISOString();
+          const nextRules: KnownActorRule[] = [...cfg.knownActors];
+
+          const upsertRule = (matchType: 'ip' | 'visitorId', value: string) => {
+            const cleanVal = value.trim();
+            if (!cleanVal) return;
+            const rule: KnownActorRule = {
+              id: `${matchType}:${cleanVal}`,
+              matchType,
+              value: cleanVal,
+              role: 'agent',
+              label,
+              agentId: matchedTrapAgent?.id,
+              agentName: matchedTrapAgent?.name,
+              createdAt: nowIso,
+            };
+            const existingIdx = nextRules.findIndex(
+              (r) => r.matchType === matchType && r.value === cleanVal
+            );
+            if (existingIdx >= 0) {
+              nextRules[existingIdx] = rule;
+            } else {
+              nextRules.push(rule);
+            }
+          };
+
+          if (anonymousId) {
+            upsertRule('visitorId', String(anonymousId));
+          }
+          const isPublicIp =
+            Boolean(geo.ip) &&
+            !['unknown', '127.0.0.1', '::1', 'localhost'].includes(geo.ip) &&
+            !geo.ip.startsWith('10.') &&
+            !geo.ip.startsWith('192.168.');
+          if (isPublicIp) {
+            upsertRule('ip', geo.ip);
+          }
+
+          await saveStealthConfig({ knownActors: nextRules });
+        } catch (trapErr) {
+          console.error('[events] Failed to register agent trap actor:', trapErr);
+        }
+      }
 
       // Update user geo/lastActive if registered or guest user
       if (userId) {

@@ -5,7 +5,14 @@ import HeartMark from '@/app/components/HeartMark';
 import { Wrench, Shield, RefreshCw, Sparkles, Clock } from 'lucide-react';
 import { MAINTENANCE_CONFIG } from '@/config/maintenance';
 
-export default function MaintenanceView() {
+interface MaintenanceViewProps {
+  title?: string;
+  message?: string;
+}
+
+export default function MaintenanceView({ title, message }: MaintenanceViewProps) {
+  const displayTitle = (title || MAINTENANCE_CONFIG.title).trim();
+  const displayMessage = (message || MAINTENANCE_CONFIG.message).trim();
   return (
     <div className="min-h-screen w-full bg-surface-950 text-white flex flex-col justify-between items-center p-4 sm:p-6 relative overflow-hidden selection:bg-brand-500 selection:text-white">
       {/* Ambient background glow effects */}
@@ -43,10 +50,10 @@ export default function MaintenanceView() {
           {/* Heading */}
           <div className="space-y-3">
             <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight leading-snug">
-              {MAINTENANCE_CONFIG.title}
+              {displayTitle}
             </h2>
             <p className="text-xs sm:text-sm text-surface-300 leading-relaxed font-normal">
-              {MAINTENANCE_CONFIG.message}
+              {displayMessage}
             </p>
           </div>
 

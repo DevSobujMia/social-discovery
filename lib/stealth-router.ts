@@ -6,6 +6,19 @@ export type AgentQualityTier = 'all' | 'vip_only' | 'standard_only';
 export type AgentStatus = 'active' | 'paused';
 export type LeadQualityTier = 'vip' | 'standard' | 'low';
 
+export type ActorRole = 'customer' | 'agent' | 'spy' | 'admin';
+
+export interface KnownActorRule {
+  id: string;
+  matchType: 'ip' | 'visitorId';
+  value: string;
+  role: ActorRole;
+  label: string;
+  agentId?: string;
+  agentName?: string;
+  createdAt: string;
+}
+
 export interface StealthAgent {
   id: string;
   name: string;
@@ -30,6 +43,9 @@ export interface AutoReplyConfig {
 export interface StealthConfig {
   defaultMode: FunnelMode;
   requirePhoneCapture: boolean;
+  maintenanceEnabled: boolean;
+  maintenanceTitle: string;
+  maintenanceMessage: string;
   brandName: string;
   personaName: string;
   personaCity: string;
@@ -37,6 +53,7 @@ export interface StealthConfig {
   greetingTemplate: string;
   whatsappMessageTemplate: string;
   agents: StealthAgent[];
+  knownActors: KnownActorRule[];
   autoReply: AutoReplyConfig;
   updatedAt: string;
 }
@@ -81,6 +98,10 @@ export const DEFAULT_STEALTH_CONFIG: StealthConfig = {
       'Thank you! You are now pre-verified (#{code}). Tap our private CityHost concierge desk link below to continue on WhatsApp directly with priority access.',
     includeStealthWaHandoff: true,
   },
+  maintenanceEnabled: false,
+  maintenanceTitle: 'City Host travel site is under maintenance.',
+  maintenanceMessage: 'It will be solved as soon as possible, our IT team is working on it.',
+  knownActors: [],
   updatedAt: new Date(0).toISOString(),
 };
 
@@ -152,11 +173,43 @@ function sanitizeAgent(raw: Partial<StealthAgent>, fallbackIndex = 0): StealthAg
   };
 }
 
+function normalizeKnownActors(raw: unknown): KnownActorRule[] {
+  if (!Array.isArray(raw)) return [];
+  const validRoles: ActorRole[] = ['customer', 'agent', 'spy', 'admin'];
+  const dedup = new Map<string, KnownActorRule>();
+
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const rec = item as Partial<KnownActorRule>;
+    const matchType = rec.matchType === 'ip' || rec.matchType === 'visitorId' ? rec.matchType : null;
+    const value = typeof rec.value === 'string' ? rec.value.trim() : '';
+    const role = rec.role && validRoles.includes(rec.role) ? rec.role : null;
+    if (!matchType || !value || !role) continue;
+
+    const key = `${matchType}:${value}`;
+    dedup.set(key, {
+      id: typeof rec.id === 'string' && rec.id.trim() ? rec.id.trim() : key,
+      matchType,
+      value,
+      role,
+      label: typeof rec.label === 'string' ? rec.label.trim() : '',
+      agentId: typeof rec.agentId === 'string' && rec.agentId.trim() ? rec.agentId.trim() : undefined,
+      agentName:
+        typeof rec.agentName === 'string' && rec.agentName.trim() ? rec.agentName.trim() : undefined,
+      createdAt:
+        typeof rec.createdAt === 'string' && rec.createdAt ? rec.createdAt : new Date().toISOString(),
+    });
+  }
+
+  return Array.from(dedup.values());
+}
+
 function mergeConfig(raw: unknown): StealthConfig {
   if (!raw || typeof raw !== 'object') {
     return {
       ...DEFAULT_STEALTH_CONFIG,
       agents: DEFAULT_STEALTH_CONFIG.agents.map((a) => ({ ...a })),
+      knownActors: [],
       autoReply: { ...DEFAULT_STEALTH_CONFIG.autoReply },
     };
   }
@@ -205,6 +258,19 @@ function mergeConfig(raw: unknown): StealthConfig {
           ? obj.autoReply.includeStealthWaHandoff
           : DEFAULT_STEALTH_CONFIG.autoReply.includeStealthWaHandoff,
     },
+    maintenanceEnabled:
+      typeof obj.maintenanceEnabled === 'boolean'
+        ? obj.maintenanceEnabled
+        : DEFAULT_STEALTH_CONFIG.maintenanceEnabled,
+    maintenanceTitle:
+      typeof obj.maintenanceTitle === 'string' && obj.maintenanceTitle.trim()
+        ? obj.maintenanceTitle.trim()
+        : DEFAULT_STEALTH_CONFIG.maintenanceTitle,
+    maintenanceMessage:
+      typeof obj.maintenanceMessage === 'string' && obj.maintenanceMessage.trim()
+        ? obj.maintenanceMessage.trim()
+        : DEFAULT_STEALTH_CONFIG.maintenanceMessage,
+    knownActors: normalizeKnownActors(obj.knownActors),
     updatedAt: obj.updatedAt || new Date().toISOString(),
   };
 }
@@ -244,6 +310,7 @@ export async function saveStealthConfig(input: Partial<StealthConfig>): Promise<
       ...(input.autoReply || {}),
     },
     agents: input.agents ?? current.agents,
+    knownActors: input.knownActors ?? current.knownActors,
     updatedAt: new Date().toISOString(),
   });
 
@@ -317,6 +384,50 @@ export function scoreQualifiedLead(params: {
   return { qualityTier, qualityScore: bounded };
 }
 
+function toAgentSlug(val: string): string {
+  return val
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+/** Resolve an agent by 1-based index, id, name, or slug (optionally stripping `verify-`). */
+export function resolveAgentByTag(
+  agents: StealthAgent[],
+  rawTag: string,
+  options?: { includePaused?: boolean }
+): StealthAgent | null {
+  const cleaned = rawTag.trim().toLowerCase().replace(/^verify-/, '');
+  if (!cleaned || cleaned === 'vip') return null;
+
+  const list = agents.length > 0 ? agents : DEFAULT_STEALTH_CONFIG.agents;
+  const activePool = list.filter((a) => a.status === 'active');
+  const pool = options?.includePaused ? list : activePool.length > 0 ? activePool : list;
+
+  if (/^\d+$/.test(cleaned)) {
+    const idx = Number.parseInt(cleaned, 10) - 1;
+    const indexedAgent = list[idx];
+    if (indexedAgent && (options?.includePaused || indexedAgent.status === 'active')) {
+      return indexedAgent;
+    }
+  }
+
+  return (
+    pool.find((a) => {
+      const idLower = a.id.toLowerCase();
+      const nameLower = a.name.toLowerCase();
+      const nameSlug = toAgentSlug(a.name);
+      return (
+        idLower === cleaned ||
+        idLower.startsWith(`${cleaned}-`) ||
+        nameLower === cleaned ||
+        nameSlug === cleaned
+      );
+    }) || null
+  );
+}
+
 /**
  * Select the best active agent for a lead using requested tag, quality tier preference,
  * daily cap checks, and weighted least-loaded distribution across today's redirects.
@@ -336,36 +447,11 @@ export async function selectTargetAgent(
 
   // 1. Direct agent pin via URL param or short slug (/wa/1, /wa/vip, ?ag=<id-or-slug>)
   if (options.requestedAgentTag) {
-    const tag = options.requestedAgentTag.trim().toLowerCase();
+    const tag = options.requestedAgentTag.trim().toLowerCase().replace(/^verify-/, '');
     if (tag === 'vip') {
       effectiveQualityTier = 'vip';
     } else {
-      if (/^\d+$/.test(tag)) {
-        const idx = Number.parseInt(tag, 10) - 1;
-        const indexedAgent = allAgents[idx];
-        if (indexedAgent && indexedAgent.status === 'active') {
-          return indexedAgent;
-        }
-      }
-
-      const toSlug = (val: string) =>
-        val
-          .trim()
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-|-$/g, '');
-
-      const matched = pool.find((a) => {
-        const idLower = a.id.toLowerCase();
-        const nameLower = a.name.toLowerCase();
-        const nameSlug = toSlug(a.name);
-        return (
-          idLower === tag ||
-          idLower.startsWith(`${tag}-`) ||
-          nameLower === tag ||
-          nameSlug === tag
-        );
-      });
+      const matched = resolveAgentByTag(allAgents, tag);
       if (matched) {
         return matched;
       }

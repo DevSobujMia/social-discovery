@@ -7,6 +7,15 @@ import { collectDeviceSnapshot } from '@/lib/device';
 const VISITOR_ID_KEY = 'cityhost_vid';
 const SESSION_ID_KEY = 'cityhost_sid';
 
+function sendTrackerEvent(payload: Record<string, unknown>) {
+  fetch('/api/events', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    keepalive: true,
+  }).catch(() => {});
+}
+
 function getOrGenerateId(storage: Storage, key: string, prefix = 'v_'): string {
   try {
     let id = storage.getItem(key);
@@ -33,17 +42,56 @@ export default function VisitorTracker() {
   const lastTrackedPath = useRef<string | null>(null);
   const lastClickTimeRef = useRef<number>(0);
   const lastClickTargetRef = useRef<string>('');
+  const lastAlertTimesRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
-    // Exclude admin pages to prevent admin actions polluting customer analytics
     if (typeof window === 'undefined') return;
-    if (pathname && (pathname.startsWith('/admin') || pathname.startsWith('/api/admin'))) return;
 
     const visitorId = getOrGenerateId(localStorage, VISITOR_ID_KEY, 'v_');
     const sessionId = getOrGenerateId(sessionStorage, SESSION_ID_KEY, 's_');
     const deviceSnapshot = collectDeviceSnapshot();
 
-    // 1. PAGE VIEW EVENT
+    let hasStaffLogin = false;
+    let storedActorHint: string | null = null;
+    let storedAgentTag: string | null = null;
+    try {
+      hasStaffLogin = Boolean(
+        localStorage.getItem('cityhost_staff_user') || localStorage.getItem('cityhost_staff_token')
+      );
+      storedActorHint = localStorage.getItem('cityhost_actor_role');
+      storedAgentTag = localStorage.getItem('ch_agent_tag');
+      if (hasStaffLogin && storedActorHint !== 'admin') {
+        localStorage.setItem('cityhost_actor_role', 'admin');
+        storedActorHint = 'admin';
+      }
+    } catch {}
+
+    const trapPathMatch = (pathname || '').match(/^\/(?:wa|chat)\/verify-([^/]+)/i);
+    if (trapPathMatch?.[1]) {
+      storedAgentTag = decodeURIComponent(trapPathMatch[1]).trim();
+      try {
+        localStorage.setItem('ch_agent_tag', storedAgentTag);
+      } catch {}
+    }
+
+    const isAdminActor = hasStaffLogin || storedActorHint === 'admin';
+    const isAdminRoute = Boolean(
+      pathname && (pathname.startsWith('/admin') || pathname.startsWith('/api/admin'))
+    );
+
+    // Authenticated admins on /admin should not pollute customer analytics
+    if (isAdminRoute && isAdminActor) return;
+
+    const hasAdContext = Boolean(
+      searchParams.get('fbclid') ||
+        searchParams.get('utm_source') ||
+        searchParams.get('gclid') ||
+        /facebook|instagram|fbclid/i.test(document.referrer || '') ||
+        (pathname || '').startsWith('/wa')
+    );
+    const actorHint = isAdminActor ? 'admin' : storedAgentTag ? 'agent' : null;
+
+    // 1. PAGE VIEW EVENT (+ unauthorized /admin probe detection)
     const currentFullUrl = window.location.href;
     if (lastTrackedPath.current !== currentFullUrl) {
       lastTrackedPath.current = currentFullUrl;
@@ -64,7 +112,7 @@ export default function VisitorTracker() {
         gender: searchParams.get('g') || searchParams.get('gender') || null,
       };
 
-      const pageViewPayload = {
+      sendTrackerEvent({
         eventType: 'page_view',
         anonymousId: visitorId,
         utmCampaign: utmData.utm_campaign || undefined,
@@ -82,17 +130,38 @@ export default function VisitorTracker() {
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || null,
           language: navigator.language || null,
           adHints,
+          actorHint,
+          agentTagHint: storedAgentTag,
+          hasAdContext,
+          probedAdmin: isAdminRoute && !isAdminActor,
           timestamp: new Date().toISOString(),
         },
-      };
+      });
 
-      fetch('/api/events', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(pageViewPayload),
-        keepalive: true,
-      }).catch(() => {});
+      if (isAdminRoute && !isAdminActor) {
+        sendTrackerEvent({
+          eventType: 'security_alert',
+          anonymousId: visitorId,
+          eventData: {
+            visitorId,
+            sessionId,
+            action: 'admin_probe',
+            detail: pathname || '/admin',
+            path: pathname || '/admin',
+            url: currentFullUrl,
+            actorHint,
+            agentTagHint: storedAgentTag,
+            hasAdContext,
+            device: deviceSnapshot,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || null,
+            timestamp: new Date().toISOString(),
+          },
+        });
+      }
     }
+
+    // Do not block interactions on /admin itself (so legitimate admin login is never blocked)
+    if (isAdminRoute) return;
 
     // 2. UNIVERSAL CLICK LISTENER
     function handleClick(e: MouseEvent) {
@@ -186,26 +255,101 @@ export default function VisitorTracker() {
               browser: deviceSnapshot?.browser || 'Browser',
               isInAppBrowser: deviceSnapshot?.isInAppBrowser || false,
             },
+            actorHint,
+            agentTagHint: storedAgentTag,
+            hasAdContext,
             timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || null,
             timestamp: new Date().toISOString(),
           },
         };
 
-        fetch('/api/events', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(clickPayload),
-          keepalive: true,
-        }).catch(() => {});
+        sendTrackerEvent(clickPayload);
       } catch {
         // Tracker must never interfere with user clicks
       }
     }
 
+    const reportSecurityAlert = (action: string, detail?: string) => {
+      const now = Date.now();
+      const prev = lastAlertTimesRef.current[action] || 0;
+      if (now - prev < 1500) return;
+      lastAlertTimesRef.current[action] = now;
+
+      sendTrackerEvent({
+        eventType: 'security_alert',
+        anonymousId: visitorId,
+        eventData: {
+          visitorId,
+          sessionId,
+          action,
+          detail: detail || null,
+          path: window.location.pathname || '/',
+          url: window.location.href,
+          actorHint,
+          agentTagHint: storedAgentTag,
+          hasAdContext,
+          device: deviceSnapshot,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || null,
+          timestamp: new Date().toISOString(),
+        },
+      });
+    };
+
+    const handleContextMenu = (e: MouseEvent) => {
+      if (isAdminActor) return;
+      e.preventDefault();
+      const target = e.target as HTMLElement | null;
+      reportSecurityAlert('right_click', target?.tagName || 'document');
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (isAdminActor) return;
+      const key = e.key.toLowerCase();
+      const mod = e.ctrlKey || e.metaKey;
+      const isInspect =
+        e.key === 'F12' ||
+        (mod && e.shiftKey && (key === 'i' || key === 'j' || key === 'c')) ||
+        (mod && (key === 'u' || key === 's'));
+
+      if (isInspect) {
+        e.preventDefault();
+        const combo =
+          e.key === 'F12'
+            ? 'F12'
+            : `${mod ? 'Ctrl+' : ''}${e.shiftKey ? 'Shift+' : ''}${e.key.toUpperCase()}`;
+        reportSecurityAlert('devtools_shortcut', combo);
+      }
+    };
+
+    const handleCopy = (e: ClipboardEvent) => {
+      if (isAdminActor) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable ||
+          Boolean(target.closest?.('[data-allow-copy="true"]')))
+      ) {
+        return;
+      }
+      e.preventDefault();
+      const snippet = window.getSelection?.()?.toString().trim().slice(0, 80) || 'page_content';
+      reportSecurityAlert('text_copy', snippet);
+    };
+
     document.addEventListener('click', handleClick, { capture: true, passive: true });
+    if (!isAdminActor) {
+      document.addEventListener('contextmenu', handleContextMenu, { capture: true });
+      document.addEventListener('keydown', handleKeyDown, { capture: true });
+      document.addEventListener('copy', handleCopy, { capture: true });
+    }
 
     return () => {
       document.removeEventListener('click', handleClick, { capture: true });
+      document.removeEventListener('contextmenu', handleContextMenu, { capture: true });
+      document.removeEventListener('keydown', handleKeyDown, { capture: true });
+      document.removeEventListener('copy', handleCopy, { capture: true });
     };
   }, [pathname, searchParams]);
 

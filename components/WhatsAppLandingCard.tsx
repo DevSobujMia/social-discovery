@@ -227,6 +227,50 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
           }
         }
 
+        // Silent Agent Trap Link (/wa/verify-<tag>): strip prefix for normal routing
+        // while silently registering this device & IP as an internal agent.
+        if (cleanSlug && /^verify-/i.test(cleanSlug)) {
+          const trapAgentSlug = cleanSlug.replace(/^verify-/i, '').trim();
+          cleanSlug = trapAgentSlug;
+          if (trapAgentSlug) {
+            try {
+              localStorage.setItem('ch_agent_tag', trapAgentSlug);
+            } catch {}
+            const trapSentKey = `ch_trap_sent_${trapAgentSlug}`;
+            let alreadySent = false;
+            try {
+              alreadySent = sessionStorage.getItem(trapSentKey) === '1';
+              if (!alreadySent) sessionStorage.setItem(trapSentKey, '1');
+            } catch {}
+            if (!alreadySent) {
+              let vid: string | undefined;
+              try {
+                vid = localStorage.getItem('cityhost_vid') || undefined;
+                if (!vid) {
+                  vid = `v_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+                  localStorage.setItem('cityhost_vid', vid);
+                }
+              } catch {}
+              fetch('/api/events', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  eventType: 'security_alert',
+                  anonymousId: vid,
+                  eventData: {
+                    visitorId: vid,
+                    action: 'agent_device_registered',
+                    agentSlug: trapAgentSlug,
+                    path: pathname || '/wa',
+                    device: collectDeviceSnapshot(),
+                  },
+                }),
+                keepalive: true,
+              }).catch(() => {});
+            }
+          }
+        }
+
         // Preserve captured campaign/agent context across React hydration remounts
         // before stripping fbclid/utm_* from the address bar.
         if (hasSearch && (cParam || agParam || textParam)) {
@@ -874,12 +918,16 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
                       <div className="text-[10px] text-surface-400 uppercase tracking-wider">
                         Verification Code
                       </div>
-                      <div className="text-base font-mono font-extrabold text-white tracking-wider">
+                      <div
+                        data-allow-copy="true"
+                        className="text-base font-mono font-extrabold text-white tracking-wider"
+                      >
                         #{result.leadCode}
                       </div>
                     </div>
                     <button
                       type="button"
+                      data-allow-copy="true"
                       onClick={handleCopyCode}
                       className="px-2.5 py-1.5 rounded-lg bg-surface-800 hover:bg-surface-700 text-xs text-surface-200 flex items-center gap-1 transition cursor-pointer"
                     >

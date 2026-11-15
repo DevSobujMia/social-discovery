@@ -179,6 +179,10 @@ export default function AdminDashboardPage() {
   const [analytics, setAnalytics] = useState<any>(null);
   const [loadingAnalytics, setLoadingAnalytics] = useState(false);
 
+  // 1-click Homepage Maintenance toggle
+  const [maintenanceEnabled, setMaintenanceEnabled] = useState(false);
+  const [togglingMaintenance, setTogglingMaintenance] = useState(false);
+
   // Users data
   const [usersList, setUsersList] = useState<any[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
@@ -317,6 +321,48 @@ export default function AdminDashboardPage() {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
+  const fetchMaintenanceStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/maintenance', { cache: 'no-store' });
+      const json = await res.json();
+      if (json.success && json.data) {
+        setMaintenanceEnabled(Boolean(json.data.enabled));
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    void fetchMaintenanceStatus();
+  }, [fetchMaintenanceStatus]);
+
+  const handleToggleMaintenance = async () => {
+    if (togglingMaintenance) return;
+    setTogglingMaintenance(true);
+    const targetState = !maintenanceEnabled;
+    try {
+      const res = await adminFetch('/api/maintenance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: targetState }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setMaintenanceEnabled(Boolean(json.data?.enabled));
+        showToast(
+          json.data?.enabled
+            ? '🟠 Homepage Maintenance ON (/ paused; /wa & /chat stay LIVE)'
+            : '🟢 Homepage is now LIVE for all visitors'
+        );
+      } else {
+        showToast(json.error?.message || 'Failed to update maintenance mode');
+      }
+    } catch {
+      showToast('Network error updating maintenance mode');
+    } finally {
+      setTogglingMaintenance(false);
+    }
+  };
+
   const getStoredStaffToken = (): string | null => {
     if (typeof window === 'undefined') return null;
     try {
@@ -377,6 +423,7 @@ export default function AdminDashboardPage() {
         currentStaffRef.current = data.data.staff;
         try {
           localStorage.setItem('cityhost_staff_user', JSON.stringify(data.data.staff));
+          localStorage.setItem('cityhost_actor_role', 'admin');
         } catch {}
       } else {
         const token = getStoredStaffToken();
@@ -454,6 +501,7 @@ export default function AdminDashboardPage() {
         if (data.data.staff) {
           try {
             localStorage.setItem('cityhost_staff_user', JSON.stringify(data.data.staff));
+            localStorage.setItem('cityhost_actor_role', 'admin');
           } catch {}
           setCurrentStaff(data.data.staff);
           currentStaffRef.current = data.data.staff;
@@ -1814,6 +1862,32 @@ export default function AdminDashboardPage() {
                 <span className="hidden md:inline">Ads Simulator</span>
               </Link>
             )}
+
+            <button
+              type="button"
+              onClick={() => void handleToggleMaintenance()}
+              disabled={togglingMaintenance}
+              data-testid="maintenance-toggle-btn"
+              title={
+                maintenanceEnabled
+                  ? 'Homepage / is Under Maintenance (click to go LIVE). Note: /wa & /chat ads keep running.'
+                  : 'Homepage / is LIVE (click to put / under Maintenance immediately)'
+              }
+              className={`px-2.5 md:px-3 py-1.5 rounded-lg text-[11px] md:text-xs font-bold border transition cursor-pointer disabled:opacity-60 flex items-center gap-1.5 shrink-0 ${
+                maintenanceEnabled
+                  ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40'
+                  : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border-emerald-500/35'
+              }`}
+            >
+              <span>{maintenanceEnabled ? '🟠' : '🟢'}</span>
+              <span>
+                {togglingMaintenance
+                  ? 'Updating...'
+                  : maintenanceEnabled
+                    ? 'Site: Maintenance'
+                    : 'Site: LIVE'}
+              </span>
+            </button>
 
             <Link
               href="/"
