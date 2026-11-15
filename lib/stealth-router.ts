@@ -481,6 +481,7 @@ function normalizeCountryToken(raw?: string | null): string {
   if (up === 'GERMANY' || up === 'DE') return 'DE';
   if (up === 'FRANCE' || up === 'FR') return 'FR';
   if (up === 'EUROPE' || up === 'EU') return 'EU';
+  if (up === 'TURKEY' || up === 'TR' || up === 'TÜRKIYE' || up === 'TURKIYE') return 'TR';
   return up;
 }
 
@@ -511,6 +512,7 @@ export function matchesCountryFilter(
     AU: /(^|[^a-z])(au|aus|australia|sydney|melbourne)([^a-z]|$)/i,
     AE: /(^|[^a-z])(ae|uae|dubai|abudhabi)([^a-z]|$)/i,
     SG: /(^|[^a-z])(sg|singapore)([^a-z]|$)/i,
+    TR: /(^|[^a-z])(tr|turkey|turkiye|istanbul|ankara|antalya)([^a-z]|$)/i,
   };
   const rx = campaignAliases[filterNorm];
   return rx ? rx.test(campLower) : campLower.includes(filterNorm.toLowerCase());

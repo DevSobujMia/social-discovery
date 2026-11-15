@@ -54,6 +54,7 @@ interface AgentStatRow extends StealthAgent {
 
 const COUNTRY_FILTER_OPTIONS = [
   { id: 'ALL', label: '🌍 All Countries' },
+  { id: 'TR', label: '🇹🇷 Turkey' },
   { id: 'UK', label: '🇬🇧 UK' },
   { id: 'US', label: '🇺🇸 USA' },
   { id: 'CA', label: '🇨🇦 Canada' },
