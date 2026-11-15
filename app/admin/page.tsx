@@ -48,7 +48,11 @@ import {
   Pencil,
   Eye,
   EyeOff,
+  MousePointerClick,
+  Route,
 } from 'lucide-react';
+import VisitorAnalyticsView from './components/VisitorAnalyticsView';
+import StealthRouterView from './components/StealthRouterView';
 import {
   COUNTRY_CITIES,
   POPULAR_COUNTRIES,
@@ -168,7 +172,7 @@ export default function AdminDashboardPage() {
   const [loggingIn, setLoggingIn] = useState(false);
 
   // Active tab
-  const [activeTab, setActiveTab] = useState<'analytics' | 'users' | 'inbox' | 'trips' | 'campaigns' | 'reports'>('inbox');
+  const [activeTab, setActiveTab] = useState<'analytics' | 'visitors' | 'stealth' | 'users' | 'inbox' | 'trips' | 'campaigns' | 'reports'>('inbox');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   // Analytics data
@@ -1916,6 +1920,36 @@ export default function AdminDashboardPage() {
 
               <button
                 onClick={() => {
+                  setActiveTab('visitors');
+                  setMobileMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                  activeTab === 'visitors'
+                    ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30 font-bold'
+                    : 'text-surface-300 hover:text-white hover:bg-surface-800/70'
+                }`}
+              >
+                <MousePointerClick className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>Live Visitors & Clicks</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab('stealth');
+                  setMobileMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                  activeTab === 'stealth'
+                    ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30 font-bold'
+                    : 'text-surface-300 hover:text-white hover:bg-surface-800/70'
+                }`}
+              >
+                <Route className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>Ad Router & Agents</span>
+              </button>
+
+              <button
+                onClick={() => {
                   setActiveTab('users');
                   setMobileMenuOpen(false);
                 }}
@@ -2051,6 +2085,30 @@ export default function AdminDashboardPage() {
           </button>
 
           <button
+            onClick={() => setActiveTab('visitors')}
+            className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition shrink-0 ${
+              activeTab === 'visitors'
+                ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30'
+                : 'text-surface-400 hover:text-white hover:bg-surface-800/60'
+            }`}
+          >
+            <MousePointerClick className="w-4 h-4 text-emerald-400" />
+            <span>Live Visitors & Clicks</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('stealth')}
+            className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition shrink-0 ${
+              activeTab === 'stealth'
+                ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30'
+                : 'text-surface-400 hover:text-white hover:bg-surface-800/60'
+            }`}
+          >
+            <Route className="w-4 h-4 text-emerald-400" />
+            <span>Ad Router & Agents</span>
+          </button>
+
+          <button
             onClick={() => setActiveTab('users')}
             className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition shrink-0 ${
               activeTab === 'users'
@@ -2169,6 +2227,31 @@ export default function AdminDashboardPage() {
                 </div>
               </div>
 
+              {/* Live Telemetry Banner in Dashboard */}
+              <div className="glass-card p-4 border border-emerald-500/20 bg-emerald-950/10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center shrink-0">
+                    <MousePointerClick className="w-5 h-5 text-emerald-400" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-bold text-white">Live Visitor & Click Tracking Engine</h3>
+                      <span className="badge-teal text-[9px] font-bold">Active Telemetry</span>
+                    </div>
+                    <p className="text-xs text-surface-400 mt-0.5">
+                      Track visitors in real-time with exact country, city, IP, device, and every single button or profile they click.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setActiveTab('visitors')}
+                  className="px-3.5 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-bold text-xs border border-emerald-500/40 transition flex items-center gap-2 shrink-0 cursor-pointer"
+                >
+                  <span>Open Live Tracker</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
               {/* Direct Operations & Campaign Attribution */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                 {/* Admin Direct Operations Card */}
@@ -2245,6 +2328,20 @@ export default function AdminDashboardPage() {
                 </div>
               </div>
             </div>
+          )}
+
+          {/* ============================================================ */}
+          {/* LIVE VISITORS, LOCATION & CLICK TRACKING                      */}
+          {/* ============================================================ */}
+          {activeTab === 'visitors' && (
+            <VisitorAnalyticsView adminFetch={adminFetch} />
+          )}
+
+          {/* ============================================================ */}
+          {/* CONFIDENTIAL AD ROUTER, QUALIFIER & ANTI-CHEAT AGENT LEDGER  */}
+          {/* ============================================================ */}
+          {activeTab === 'stealth' && (
+            <StealthRouterView adminFetch={adminFetch} />
           )}
 
           {/* ============================================================ */}

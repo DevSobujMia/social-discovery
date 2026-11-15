@@ -7,6 +7,7 @@
     "go": "node scripts/dev-all.mjs",
     "dev:next": "next dev --webpack",
     "db": "node scripts/dev-db.mjs",
+    "prebuild": "node scripts/prebuild-unlock.mjs",
     "build": "next build",
     "start": "node scripts/prod-all.mjs",
     "deploy": "gcloud run deploy cityhost-app --source . --region asia-south1 --allow-unauthenticated",

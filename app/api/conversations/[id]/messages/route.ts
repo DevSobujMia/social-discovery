@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db';
 import { getCurrentUser, getCurrentStaff, requireUser, signToken } from '@/lib/auth';
 import { sendPushToStaff, sendPushToUser } from '@/lib/push-service';
 import { success, error, handleApiError } from '@/lib/api-helpers';
+import { triggerAutoReplyIfEnabled } from '@/lib/stealth-router';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -440,6 +441,14 @@ export async function POST(
         },
       });
     } catch {}
+
+    // Trigger on-site 3-step concierge auto-reply warmup when enabled
+    await triggerAutoReplyIfEnabled({
+      conversationId: id,
+      customerUserId: currentUser!.id,
+      counterpartId,
+      origin: req.nextUrl.origin,
+    });
 
     // Dispatch Web Push to staff (wakes up staff phones even when admin tab is closed)
     try {

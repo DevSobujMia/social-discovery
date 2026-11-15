@@ -36,12 +36,27 @@ echo       Region:   asia-south1
 echo       Domain:   https://cityhost.live
 echo.
 
-call gcloud run deploy cityhost-app ^
-  --project project-032ba178-497a-4f65-950 ^
-  --region asia-south1 ^
-  --source . ^
-  --allow-unauthenticated ^
-  --quiet
+call :RUN_DEPLOY
+
+if %ERRORLEVEL% neq 0 (
+    color 0E
+    echo.
+    echo  =============================================================
+    echo    Deployment failed or wrong Google account is active.
+    echo    Starting automatic gcloud account recovery...
+    echo    Sign in with the Google account that owns project-032ba178-497a-4f65-950.
+    echo  =============================================================
+    echo.
+    call gcloud config unset billing/quota_project >nul 2>&1
+    call gcloud auth login
+    if %ERRORLEVEL% equ 0 (
+        call gcloud config set project project-032ba178-497a-4f65-950 >nul 2>&1
+        echo.
+        echo Retrying Cloud Run deployment...
+        color 0B
+        call :RUN_DEPLOY
+    )
+)
 
 if %ERRORLEVEL% equ 0 (
     color 0A
@@ -65,3 +80,13 @@ if %ERRORLEVEL% equ 0 (
 echo.
 echo Press any key to exit...
 pause >nul
+exit /b %ERRORLEVEL%
+
+:RUN_DEPLOY
+call gcloud run deploy cityhost-app ^
+  --project project-032ba178-497a-4f65-950 ^
+  --region asia-south1 ^
+  --source . ^
+  --allow-unauthenticated ^
+  --quiet
+exit /b %ERRORLEVEL%

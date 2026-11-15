@@ -63,7 +63,8 @@ export async function GET() {
 
     // Funnel data
     const funnelData = {
-      visitors: recentEvents.find(e => e.eventType === 'page_view')?._count || 0,
+      visitors: (recentEvents.find(e => e.eventType === 'page_view')?._count || 0) + (recentEvents.find(e => e.eventType === 'ad_landing_view')?._count || 0),
+      clicks: recentEvents.find(e => e.eventType === 'click')?._count || 0,
       profileViews: recentEvents.find(e => e.eventType === 'profile_view')?._count || 0,
       signups: recentEvents.find(e => e.eventType === 'signup_complete')?._count || 0,
       likes: recentEvents.find(e => e.eventType === 'like')?._count || 0,
@@ -82,6 +83,8 @@ export async function GET() {
         totalConversations,
         totalMessages,
         unassignedCount,
+        recentVisitorsCount: funnelData.visitors,
+        recentClicksCount: funnelData.clicks,
       },
       agentWorkload: agentWorkload.map(a => ({
         id: a.id,

@@ -1,8 +1,10 @@
+import { Suspense } from 'react';
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import MetaPixel from './components/MetaPixel';
 import ClarityAnalytics from './components/ClarityAnalytics';
 import RegisterSW from './components/RegisterSW';
+import VisitorTracker from './components/VisitorTracker';
 
 const appName = 'City Host';
 
@@ -116,6 +118,9 @@ export default function RootLayout({
       <body className="antialiased app-shell" suppressHydrationWarning>
         <MetaPixel />
         <ClarityAnalytics />
+        <Suspense fallback={null}>
+          <VisitorTracker />
+        </Suspense>
         <RegisterSW />
         {children}
       </body>
