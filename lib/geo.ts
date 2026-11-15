@@ -156,16 +156,20 @@ export function isPrivateIp(ip: string): boolean {
   return false;
 }
 
-// In-memory cache for IP lookups (prevents repeat external lookups, max 5000 entries)
-const ipLookupCache = new Map<string, { country: string; countryCode: string; city: string; flag: string }>();
-
-/** Fast external IP geo lookup with strict 1.5s timeout and memory cache */
-export async function lookupPublicIp(ip: string): Promise<{
+export interface PublicIpLookupResult {
   country: string;
   countryCode: string;
+  region: string;
   city: string;
+  isp: string;
   flag: string;
-} | null> {
+}
+
+// In-memory cache for IP lookups (prevents repeat external lookups, max 5000 entries)
+const ipLookupCache = new Map<string, PublicIpLookupResult>();
+
+/** Fast external IP geo lookup (Country + State/Division + City + ISP) with 1.5s timeout and memory cache */
+export async function lookupPublicIp(ip: string): Promise<PublicIpLookupResult | null> {
   if (!ip || isPrivateIp(ip)) return null;
 
   if (ipLookupCache.has(ip)) {
@@ -176,22 +180,63 @@ export async function lookupPublicIp(ip: string): Promise<{
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 1500);
 
-    const res = await fetch(`http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,country,countryCode,city`, {
-      signal: controller.signal,
-      headers: { 'User-Agent': 'CityHost-GeoResolver/1.0' },
-    });
+    const res = await fetch(
+      `http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,country,countryCode,regionName,city,isp,org`,
+      {
+        signal: controller.signal,
+        headers: { 'User-Agent': 'CityHost-GeoResolver/1.0' },
+      }
+    );
     clearTimeout(timeout);
 
     if (res.ok) {
       const data = await res.json();
       if (data && data.status === 'success' && data.countryCode) {
-        const result = {
+        const result: PublicIpLookupResult = {
           country: data.country || getCountryName(data.countryCode),
           countryCode: String(data.countryCode).toUpperCase(),
-          city: data.city || '',
+          region: typeof data.regionName === 'string' ? data.regionName.trim() : '',
+          city: typeof data.city === 'string' ? data.city.trim() : '',
+          isp:
+            (typeof data.isp === 'string' && data.isp.trim()) ||
+            (typeof data.org === 'string' && data.org.trim()) ||
+            '',
           flag: getCountryFlag(data.countryCode),
         };
 
+        if (result.city && result.region) {
+          if (ipLookupCache.size > 5000) ipLookupCache.clear();
+          ipLookupCache.set(ip, result);
+          return result;
+        }
+      }
+    }
+  } catch {
+    // Fallback to secondary lookup below
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1500);
+    const res = await fetch(`https://ipwho.is/${encodeURIComponent(ip)}`, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'CityHost-GeoResolver/1.0' },
+    });
+    clearTimeout(timeout);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.success !== false && data.country_code) {
+        const result: PublicIpLookupResult = {
+          country: data.country || getCountryName(data.country_code),
+          countryCode: String(data.country_code).toUpperCase(),
+          region: typeof data.region === 'string' ? data.region.trim() : '',
+          city: typeof data.city === 'string' ? data.city.trim() : '',
+          isp:
+            (typeof data.connection?.isp === 'string' && data.connection.isp.trim()) ||
+            (typeof data.connection?.org === 'string' && data.connection.org.trim()) ||
+            '',
+          flag: getCountryFlag(data.country_code),
+        };
         if (ipLookupCache.size > 5000) ipLookupCache.clear();
         ipLookupCache.set(ip, result);
         return result;
@@ -208,7 +253,9 @@ export interface GeoLocationResult {
   ip: string;
   country: string;
   countryCode: string;
+  region?: string;
   city: string;
+  isp?: string;
   flag: string;
   source: 'edge' | 'ad-param' | 'ip-lookup' | 'timezone' | 'fallback';
 }
@@ -240,14 +287,33 @@ export async function resolveVisitorGeo(
     headers.get('x-vercel-ip-city') ||
     headers.get('x-geo-city');
 
+  const edgeRegionRaw =
+    headers.get('cf-region') ||
+    headers.get('x-vercel-ip-country-region') ||
+    headers.get('x-geo-region');
+
   const edgeCity = edgeCityRaw ? decodeURIComponent(edgeCityRaw).trim() : null;
+  const edgeRegion = edgeRegionRaw ? decodeURIComponent(edgeRegionRaw).trim() : null;
 
   if (edgeCountry && edgeCountry !== 'XX' && edgeCountry.length === 2) {
+    let resolvedCity = edgeCity || hints?.city || '';
+    let resolvedRegion = edgeRegion || '';
+    let resolvedIsp = '';
+    if ((!resolvedCity || !resolvedRegion) && !isPrivateIp(ip)) {
+      const lookedUp = await lookupPublicIp(ip);
+      if (lookedUp) {
+        if (!resolvedCity && lookedUp.city) resolvedCity = lookedUp.city;
+        if (!resolvedRegion && lookedUp.region) resolvedRegion = lookedUp.region;
+        if (lookedUp.isp) resolvedIsp = lookedUp.isp;
+      }
+    }
     return {
       ip,
       country: getCountryName(edgeCountry),
       countryCode: edgeCountry,
-      city: edgeCity || hints?.city || 'Major City',
+      region: resolvedRegion || undefined,
+      city: resolvedCity || 'Major City',
+      isp: resolvedIsp || undefined,
       flag: getCountryFlag(edgeCountry),
       source: 'edge',
     };

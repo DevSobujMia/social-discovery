@@ -79,8 +79,8 @@ export default function VisitorTracker() {
       pathname && (pathname.startsWith('/admin') || pathname.startsWith('/api/admin'))
     );
 
-    // Authenticated admins on /admin should not pollute customer analytics
-    if (isAdminRoute && isAdminActor) return;
+    // Authenticated admin's own PC/phone browser should never be tracked or blocked on any page
+    if (isAdminActor) return;
 
     const hasAdContext = Boolean(
       searchParams.get('fbclid') ||

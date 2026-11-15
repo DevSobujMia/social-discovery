@@ -499,7 +499,11 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
                       <div>
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-bold text-white">
-                            {v.city ? `${v.city}, ` : ''}{v.country}
+                            {v.city && !['Major City', 'Global', 'your city', 'Unknown'].includes(v.city)
+                              ? `${v.city}, `
+                              : ''}
+                            {v.region && v.region !== v.city ? `${v.region}, ` : ''}
+                            {v.country}
                           </span>
                           <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md border inline-flex items-center gap-1 ${roleMeta.badgeClass}`}>
                             <span>{roleMeta.emoji}</span>
@@ -511,6 +515,11 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
                           <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-surface-800 text-surface-300 border border-surface-700">
                             IP: {v.ip}
                           </span>
+                          {v.isp && (
+                            <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-surface-800 text-sky-300 border border-surface-700">
+                              ISP: {v.isp}
+                            </span>
+                          )}
                           {v.user && (
                             <span className="badge-teal text-[10px] font-bold px-1.5 py-0.5">
                               Lead: {v.user.profile?.displayName || v.user.phone || 'Active'}

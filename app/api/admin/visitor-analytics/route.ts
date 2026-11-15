@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
 import { error, success, handleApiError } from '@/lib/api-helpers';
-import { getCountryFlag } from '@/lib/geo';
+import { getCountryFlag, isPrivateIp, lookupPublicIp } from '@/lib/geo';
 import {
   getStealthConfig,
   resolveAgentByTag,
@@ -92,10 +92,12 @@ function classifyVisitor(
   isExplicitlyTagged: boolean;
 } {
   const vidRule = ruleByVisitorId.get(visitor.visitorId);
-  const ipRule =
+  const rawIpRule =
     visitor.ip && visitor.ip !== 'unknown' && !visitor.ip.startsWith('127.')
       ? ruleByIp.get(visitor.ip)
       : undefined;
+  // Never match an IP rule as 'admin' so other devices on the admin's Wi-Fi are still tracked
+  const ipRule = rawIpRule?.role === 'admin' ? undefined : rawIpRule;
   const explicitRule = vidRule || ipRule || null;
 
   const resolvedTagAgent = visitor.agentTagHint
@@ -282,7 +284,9 @@ export async function GET(req: NextRequest) {
       lastActiveAt: Date;
       country: string;
       countryCode: string;
+      region: string | null;
       city: string;
+      isp: string | null;
       flag: string;
       ip: string;
       deviceType: string;
@@ -352,7 +356,10 @@ export async function GET(req: NextRequest) {
       const vid = ev.anonymousId || data.visitorId || (ev.userId ? `u_${ev.userId}` : `unknown_${ev.id}`);
       const country = data.country || 'International';
       const countryCode = (data.countryCode || 'UN').toUpperCase();
+      const region =
+        typeof data.region === 'string' && data.region.trim() ? data.region.trim() : null;
       const city = data.city || 'Global';
+      const isp = typeof data.isp === 'string' && data.isp.trim() ? data.isp.trim() : null;
       const flag = data.flag || getCountryFlag(countryCode);
       const ip = data.ip || '127.0.0.1';
 
@@ -422,7 +429,9 @@ export async function GET(req: NextRequest) {
           lastActiveAt: ev.createdAt,
           country,
           countryCode,
+          region,
           city,
+          isp,
           flag,
           ip,
           deviceType: dtKey,
@@ -464,6 +473,15 @@ export async function GET(req: NextRequest) {
         };
         visitorMap.set(vid, visitor);
       } else {
+        if (!visitor.region && region) visitor.region = region;
+        if (!visitor.isp && isp) visitor.isp = isp;
+        if (
+          city &&
+          !['Major City', 'Global', 'your city', 'Unknown'].includes(city) &&
+          ['Major City', 'Global', 'your city', 'Unknown', ''].includes(visitor.city)
+        ) {
+          visitor.city = city;
+        }
         if (!visitor.timezone && timezone) visitor.timezone = timezone;
         if (!visitor.gpu && gpu) visitor.gpu = gpu;
         if (!visitor.cpuCores && cpuCores) visitor.cpuCores = cpuCores;
@@ -640,6 +658,40 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // Backfill exact City, State/Division (region), Country & ISP for existing visitors missing full geo
+    const genericCities = new Set(['Major City', 'Global', 'your city', 'Unknown', '']);
+    const ipsNeedingGeo = new Set<string>();
+    for (const v of visitorMap.values()) {
+      if (
+        v.ip &&
+        !isPrivateIp(v.ip) &&
+        (!v.region || !v.isp || genericCities.has(v.city))
+      ) {
+        ipsNeedingGeo.add(v.ip);
+        if (ipsNeedingGeo.size >= 15) break;
+      }
+    }
+    if (ipsNeedingGeo.size > 0) {
+      const geoResolvedMap = new Map<string, Awaited<ReturnType<typeof lookupPublicIp>>>();
+      await Promise.all(
+        Array.from(ipsNeedingGeo).map(async (targetIp) => {
+          const resolved = await lookupPublicIp(targetIp);
+          if (resolved) geoResolvedMap.set(targetIp, resolved);
+        })
+      );
+      for (const v of visitorMap.values()) {
+        const resGeo = geoResolvedMap.get(v.ip);
+        if (resGeo) {
+          if (resGeo.country) v.country = resGeo.country;
+          if (resGeo.countryCode) v.countryCode = resGeo.countryCode;
+          if (resGeo.flag) v.flag = resGeo.flag;
+          if (resGeo.city && (genericCities.has(v.city) || !v.city)) v.city = resGeo.city;
+          if (resGeo.region && !v.region) v.region = resGeo.region;
+          if (resGeo.isp && !v.isp) v.isp = resGeo.isp;
+        }
+      }
+    }
+
     // Classify visitors (Customer vs Agent vs Spy vs Admin)
     for (const v of visitorMap.values()) {
       const classification = classifyVisitor(v, stealthConfig, ruleByVisitorId, ruleByIp);
@@ -731,6 +783,11 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    const filteredSecurityAlerts = securityAlertsFeed.filter((alertItem) => {
+      const v = visitorMap.get(alertItem.visitorId);
+      return !(v && v.actorRole === 'admin');
+    });
+
     // Convert aggregated visitors to array and apply search + role filters
     let visitorsList = Array.from(visitorMap.values());
 
@@ -739,7 +796,9 @@ export async function GET(req: NextRequest) {
         v.visitorId.toLowerCase().includes(search) ||
         v.ip.toLowerCase().includes(search) ||
         v.city.toLowerCase().includes(search) ||
+        (v.region && v.region.toLowerCase().includes(search)) ||
         v.country.toLowerCase().includes(search) ||
+        (v.isp && v.isp.toLowerCase().includes(search)) ||
         v.os.toLowerCase().includes(search) ||
         v.browser.toLowerCase().includes(search) ||
         v.actorLabel.toLowerCase().includes(search) ||
@@ -842,7 +901,7 @@ export async function GET(req: NextRequest) {
         topCity,
         mobilePercentage: totalEventsCount > 0 ? Math.round((mobileCount / totalEventsCount) * 100) : 0,
         inAppPercentage: totalEventsCount > 0 ? Math.round((inAppCount / totalEventsCount) * 100) : 0,
-        securityAlertsCount: securityAlertsFeed.filter((a) => a.action !== 'agent_device_registered').length,
+        securityAlertsCount: filteredSecurityAlerts.filter((a) => a.action !== 'agent_device_registered').length,
         suspectedSpiesCount: roleCounts.spy,
         agentsSeenCount: roleCounts.agent,
       },
@@ -850,7 +909,7 @@ export async function GET(req: NextRequest) {
       visitors: visitorsList.slice(0, 100),
       recentClicks,
       topClicks,
-      securityAlerts: securityAlertsFeed,
+      securityAlerts: filteredSecurityAlerts,
       geoStats: {
         countries,
         cities,
@@ -919,8 +978,15 @@ export async function POST(req: NextRequest) {
         }
       };
 
+      if (role === 'admin') {
+        // Never whitelist Admin by IP — only Admin's specific browser visitorId should be ignored,
+        // so other agents/devices connected on the same office Wi-Fi IP continue to be tracked.
+        nextRules = nextRules.filter((r) => !(r.matchType === 'ip' && r.role === 'admin'));
+      }
+
       if (visitorId) upsert('visitorId', visitorId);
       if (
+        role !== 'admin' &&
         !body.skipIp &&
         ip &&
         ip !== 'unknown' &&
