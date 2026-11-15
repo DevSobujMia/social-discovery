@@ -728,6 +728,7 @@ export async function POST(req: NextRequest) {
 
       if (visitorId) upsert('visitorId', visitorId);
       if (
+        !body.skipIp &&
         ip &&
         ip !== 'unknown' &&
         !['127.0.0.1', '::1', 'localhost'].includes(ip)

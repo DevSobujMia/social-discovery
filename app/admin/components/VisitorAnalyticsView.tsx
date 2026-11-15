@@ -357,8 +357,8 @@ export default function VisitorAnalyticsView({ adminFetch }: VisitorAnalyticsVie
       </div>
 
       {/* Sub-tabs & Search Toolbar */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-surface-900/60 p-2.5 rounded-2xl border border-surface-800">
-        <div className="flex items-center gap-1 overflow-x-auto">
+      <div className="flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-3 bg-surface-900/60 p-2.5 rounded-2xl border border-surface-800">
+        <div className="flex items-center gap-1 flex-wrap">
           <button
             onClick={() => setSubTab('journeys')}
             className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition shrink-0 flex items-center gap-1.5 cursor-pointer ${

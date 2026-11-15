@@ -502,6 +502,23 @@ export default function AdminDashboardPage() {
           try {
             localStorage.setItem('cityhost_staff_user', JSON.stringify(data.data.staff));
             localStorage.setItem('cityhost_actor_role', 'admin');
+            const vid = localStorage.getItem('cityhost_vid');
+            if (vid) {
+              const authHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+              if (token) authHeaders.Authorization = `Bearer ${token}`;
+              fetch('/api/admin/visitor-analytics', {
+                method: 'POST',
+                headers: authHeaders,
+                credentials: 'include',
+                body: JSON.stringify({
+                  action: 'tag_actor',
+                  visitorId: vid,
+                  role: 'admin',
+                  label: `Admin: ${data.data.staff.displayName || 'Administrator'}`,
+                  skipIp: true,
+                }),
+              }).catch(() => {});
+            }
           } catch {}
           setCurrentStaff(data.data.staff);
           currentStaffRef.current = data.data.staff;
