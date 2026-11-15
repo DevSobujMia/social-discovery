@@ -89,8 +89,9 @@ export default function RegisterSW() {
 
     if ('serviceWorker' in navigator) {
       let refreshing = false;
+      const hadController = Boolean(navigator.serviceWorker.controller);
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (!refreshing) {
+        if (hadController && !refreshing) {
           refreshing = true;
           window.location.reload();
         }

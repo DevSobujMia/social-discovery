@@ -289,15 +289,20 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
           }
         }
 
-        // Preserve captured campaign/agent/location context across React hydration remounts
+        // Preserve captured campaign/agent/mode/location context across React hydration remounts
         // before stripping fbclid/utm_* from the address bar.
-        if (hasSearch && (cParam || agParam || textParam || cityParam || countryParam || personaParam)) {
+        if (
+          hasSearch &&
+          (cParam || agParam || modeParam || textParam || cityParam || countryParam || personaParam)
+        ) {
           try {
             window.sessionStorage.setItem(
               'ch_stealth_ctx',
               JSON.stringify({
                 campaign: cParam,
                 agentTag: agParam,
+                mode: modeParam,
+                pathname,
                 slug: cleanSlug,
                 customText: textParam,
                 city: cityParam,
@@ -316,6 +321,8 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
               const parsed = JSON.parse(cached) as {
                 campaign?: string;
                 agentTag?: string;
+                mode?: string;
+                pathname?: string;
                 slug?: string;
                 customText?: string;
                 city?: string;
@@ -331,6 +338,14 @@ export default function WhatsAppLandingCard({ initialSlug }: WhatsAppLandingCard
                 cityParam = parsed.city || '';
                 countryParam = parsed.country || '';
                 personaParam = parsed.persona || '';
+                if (
+                  !modeParam &&
+                  parsed.mode &&
+                  (!parsed.pathname || parsed.pathname === pathname) &&
+                  Date.now() - parsed.ts < 30 * 1000
+                ) {
+                  modeParam = parsed.mode;
+                }
               }
             }
           } catch {
