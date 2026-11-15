@@ -38,7 +38,7 @@ echo.
 
 call :RUN_DEPLOY
 
-if %ERRORLEVEL% neq 0 (
+if !ERRORLEVEL! neq 0 (
     color 0E
     echo.
     echo  =============================================================
@@ -49,7 +49,7 @@ if %ERRORLEVEL% neq 0 (
     echo.
     call gcloud config unset billing/quota_project >nul 2>&1
     call gcloud auth login
-    if %ERRORLEVEL% equ 0 (
+    if !ERRORLEVEL! equ 0 (
         call gcloud config set project project-032ba178-497a-4f65-950 >nul 2>&1
         echo.
         echo Retrying Cloud Run deployment...
@@ -58,7 +58,7 @@ if %ERRORLEVEL% neq 0 (
     )
 )
 
-if %ERRORLEVEL% equ 0 (
+if !ERRORLEVEL! equ 0 (
     color 0A
     echo.
     echo  =============================================================
