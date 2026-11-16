@@ -632,7 +632,8 @@ export async function selectTargetAgent(
     for (let i = 0; i < todayEvents.length; i++) {
       const ev = todayEvents[i];
       const data = ev.eventData as Record<string, unknown> | null;
-      if (i === 0 && typeof data?.agentPhone === 'string') {
+      if (data?.isAdminTest === true) continue;
+      if (!lastRedirectPhone && typeof data?.agentPhone === 'string') {
         lastRedirectPhone = cleanPhoneDigits(data.agentPhone);
       }
       const agentId = typeof data?.agentId === 'string' ? data.agentId : '';
