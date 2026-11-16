@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { headers } from 'next/headers';
 import WhatsAppLandingCard from '@/components/WhatsAppLandingCard';
+import InstantWaRedirect from '@/components/InstantWaRedirect';
 import { buildInstantServerRedirectUrl } from '@/lib/stealth-router';
 
 export const dynamic = 'force-dynamic';
@@ -22,15 +23,7 @@ export default async function WaDirectPage({
     searchParams: sp,
   });
   if (redirectUrl) {
-    return (
-      <div className="min-h-screen bg-[#020617]" data-testid="instant-wa-redirect">
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `try{window.location.replace(${JSON.stringify(redirectUrl)});}catch(e){window.location.href=${JSON.stringify(redirectUrl)};}`,
-          }}
-        />
-      </div>
-    );
+    return <InstantWaRedirect redirectUrl={redirectUrl} />;
   }
   return <WhatsAppLandingCard />;
 }
