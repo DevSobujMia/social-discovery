@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { resolveVisitorGeo } from '@/lib/geo';
+import { getCurrentStaff } from '@/lib/auth';
 
 export type FunnelMode = 'interactive_qualifier' | 'vip_card' | 'instant_redirect';
 export type AgentQualityTier = 'all' | 'vip_only' | 'standard_only';
@@ -61,6 +62,11 @@ export interface StealthConfig {
   whatsappMessageTemplate: string;
   agents: StealthAgent[];
   knownActors: KnownActorRule[];
+  trustedAdminIps: string[];
+  ignoreAdminTests: boolean;
+  scrmSyncSecret: string;
+  metaPixelId: string;
+  metaCapiToken: string;
   autoReply: AutoReplyConfig;
   updatedAt: string;
 }
@@ -97,6 +103,11 @@ export const DEFAULT_STEALTH_CONFIG: StealthConfig = {
   maintenanceTitle: 'City Host travel site is under maintenance.',
   maintenanceMessage: 'It will be solved as soon as possible, our IT team is working on it.',
   knownActors: [],
+  trustedAdminIps: [],
+  ignoreAdminTests: true,
+  scrmSyncSecret: '',
+  metaPixelId: '',
+  metaCapiToken: '',
   updatedAt: new Date(0).toISOString(),
 };
 
@@ -304,6 +315,31 @@ function mergeConfig(raw: unknown): StealthConfig {
         ? obj.maintenanceMessage.trim()
         : DEFAULT_STEALTH_CONFIG.maintenanceMessage,
     knownActors: normalizeKnownActors(obj.knownActors),
+    trustedAdminIps: Array.isArray(obj.trustedAdminIps)
+      ? Array.from(
+          new Set(
+            obj.trustedAdminIps
+              .filter((ip): ip is string => typeof ip === 'string' && ip.trim().length > 0)
+              .map((ip) => ip.trim().slice(0, 64))
+          )
+        )
+      : [],
+    ignoreAdminTests:
+      typeof obj.ignoreAdminTests === 'boolean'
+        ? obj.ignoreAdminTests
+        : DEFAULT_STEALTH_CONFIG.ignoreAdminTests,
+    scrmSyncSecret:
+      typeof obj.scrmSyncSecret === 'string' && obj.scrmSyncSecret.trim()
+        ? obj.scrmSyncSecret.trim().slice(0, 128)
+        : '',
+    metaPixelId:
+      typeof obj.metaPixelId === 'string'
+        ? obj.metaPixelId.trim().slice(0, 64)
+        : '',
+    metaCapiToken:
+      typeof obj.metaCapiToken === 'string'
+        ? obj.metaCapiToken.trim().slice(0, 512)
+        : '',
     updatedAt: obj.updatedAt || new Date().toISOString(),
   };
 }
@@ -344,6 +380,7 @@ export async function saveStealthConfig(input: Partial<StealthConfig>): Promise<
     },
     agents: input.agents ?? current.agents,
     knownActors: input.knownActors ?? current.knownActors,
+    trustedAdminIps: input.trustedAdminIps ?? current.trustedAdminIps,
     updatedAt: new Date().toISOString(),
   });
 
@@ -840,6 +877,21 @@ export async function buildInstantServerRedirectUrl(params: {
   const whatsappUrl = `https://wa.me/${cleanAgentPhone}?text=${encodeURIComponent(messageText)}`;
   const devSummary = summarizeUaForLedger(ua);
 
+  const fbclid = getQueryParamValue(sp, 'fbclid').slice(0, 200);
+  const utmSource = getQueryParamValue(sp, 'utm_source').slice(0, 100);
+  const utmMedium = getQueryParamValue(sp, 'utm_medium').slice(0, 100);
+  const utmContent = getQueryParamValue(sp, 'utm_content').slice(0, 160);
+  const utmTerm = getQueryParamValue(sp, 'utm_term').slice(0, 160);
+  const referrer = (params.reqHeaders.get('referer') || '').slice(0, 300);
+
+  let isAdminTest = Boolean(
+    geo.ip && config.trustedAdminIps.includes(geo.ip)
+  );
+  if (!isAdminTest) {
+    const staff = await getCurrentStaff().catch(() => null);
+    if (staff) isAdminTest = true;
+  }
+
   try {
     await prisma.analyticsEvent.create({
       data: {
@@ -853,6 +905,13 @@ export async function buildInstantServerRedirectUrl(params: {
           agentName: targetAgent.name,
           agentPhone: cleanAgentPhone,
           campaign: campaign || 'direct',
+          source: utmSource || (fbclid ? 'meta_ads' : 'direct'),
+          utmSource: utmSource || null,
+          utmMedium: utmMedium || null,
+          utmContent: utmContent || null,
+          utmTerm: utmTerm || null,
+          fbclid: fbclid || null,
+          referrer: referrer || null,
           qualityTier: 'vip',
           qualityScore: 85,
           residencyTier: 'instant',
@@ -864,6 +923,7 @@ export async function buildInstantServerRedirectUrl(params: {
           flag: geo.flag,
           ip: geo.ip,
           device: devSummary,
+          isAdminTest,
           referrerStripped: true,
           instantServerRedirect: true,
           timestamp: new Date().toISOString(),

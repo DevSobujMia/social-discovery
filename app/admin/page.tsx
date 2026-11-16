@@ -172,7 +172,7 @@ export default function AdminDashboardPage() {
   const [loggingIn, setLoggingIn] = useState(false);
 
   // Active tab
-  const [activeTab, setActiveTab] = useState<'analytics' | 'visitors' | 'stealth' | 'users' | 'inbox' | 'trips' | 'campaigns' | 'reports'>('inbox');
+  const [activeTab, setActiveTab] = useState<'analytics' | 'visitors' | 'stealth' | 'users' | 'inbox' | 'trips' | 'campaigns' | 'reports'>('stealth');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   // Analytics data
@@ -1306,13 +1306,13 @@ export default function AdminDashboardPage() {
   };
 
   const loadAllData = useCallback(() => {
-    fetchAnalytics();
-    fetchUsers();
-    fetchMasterInbox();
-    fetchCampaigns();
-    fetchReports();
-    fetchTravelPlans();
-  }, []);
+    if (activeTab === 'analytics') fetchAnalytics();
+    else if (activeTab === 'users') fetchUsers();
+    else if (activeTab === 'inbox') fetchMasterInbox();
+    else if (activeTab === 'campaigns') fetchCampaigns();
+    else if (activeTab === 'reports') fetchReports();
+    else if (activeTab === 'trips') fetchTravelPlans();
+  }, [activeTab]);
 
   useEffect(() => {
     if (currentStaff) {
@@ -1322,12 +1322,12 @@ export default function AdminDashboardPage() {
 
   // Debounced search & filter for users table — stops flooding server on typing
   useEffect(() => {
-    if (!currentStaff) return;
+    if (!currentStaff || activeTab !== 'users') return;
     const timer = setTimeout(() => {
       fetchUsers();
     }, 250);
     return () => clearTimeout(timer);
-  }, [userSearch, userStatusFilter, currentStaff]);
+  }, [userSearch, userStatusFilter, currentStaff, activeTab]);
 
   // A lead counts as complete if they sent at least 1 message or provided verified contact channels.
   const isCompleteLead = useCallback(
@@ -2223,6 +2223,63 @@ export default function AdminDashboardPage() {
       <div className="flex-1 max-w-7xl w-full mx-auto p-4 md:py-6 flex flex-col md:flex-row gap-6">
         {/* Navigation Sidebar (Desktop only) */}
         <aside className="hidden md:flex md:w-56 shrink-0 flex-col gap-1">
+          <div className="px-3 pt-1 pb-1.5 text-[10px] font-bold uppercase tracking-wider text-surface-500">
+            Ads &amp; Tracking
+          </div>
+
+          <button
+            onClick={() => setActiveTab('stealth')}
+            className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition shrink-0 ${
+              activeTab === 'stealth'
+                ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30'
+                : 'text-surface-400 hover:text-white hover:bg-surface-800/60'
+            }`}
+          >
+            <Route className="w-4 h-4 text-emerald-400" />
+            <span>WhatsApp &amp; Leads</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('visitors')}
+            className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition shrink-0 ${
+              activeTab === 'visitors'
+                ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30'
+                : 'text-surface-400 hover:text-white hover:bg-surface-800/60'
+            }`}
+          >
+            <MousePointerClick className="w-4 h-4 text-emerald-400" />
+            <span>Live Visitors</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('analytics')}
+            className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition shrink-0 ${
+              activeTab === 'analytics'
+                ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30'
+                : 'text-surface-400 hover:text-white hover:bg-surface-800/60'
+            }`}
+          >
+            <BarChart3 className="w-4 h-4" />
+            <span>Analytics &amp; KPIs</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('users')}
+            className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition shrink-0 ${
+              activeTab === 'users'
+                ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30'
+                : 'text-surface-400 hover:text-white hover:bg-surface-800/60'
+            }`}
+          >
+            <Users className="w-4 h-4" />
+            <span>Users &amp; Numbers</span>
+          </button>
+
+          <div className="my-2 border-t border-surface-800/80" />
+          <div className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wider text-surface-500">
+            Site App Tools
+          </div>
+
           <button
             onClick={() => {
               setActiveTab('inbox');
@@ -2241,54 +2298,6 @@ export default function AdminDashboardPage() {
                 {totalInboxUnread > 9 ? '9+' : totalInboxUnread}
               </span>
             )}
-          </button>
-
-          <button
-            onClick={() => setActiveTab('analytics')}
-            className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition shrink-0 ${
-              activeTab === 'analytics'
-                ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30'
-                : 'text-surface-400 hover:text-white hover:bg-surface-800/60'
-            }`}
-          >
-            <BarChart3 className="w-4 h-4" />
-            <span>Dashboard & KPIs</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('visitors')}
-            className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition shrink-0 ${
-              activeTab === 'visitors'
-                ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30'
-                : 'text-surface-400 hover:text-white hover:bg-surface-800/60'
-            }`}
-          >
-            <MousePointerClick className="w-4 h-4 text-emerald-400" />
-            <span>Live Visitors & Clicks</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('stealth')}
-            className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition shrink-0 ${
-              activeTab === 'stealth'
-                ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30'
-                : 'text-surface-400 hover:text-white hover:bg-surface-800/60'
-            }`}
-          >
-            <Route className="w-4 h-4 text-emerald-400" />
-            <span>Ad Router & Agents</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('users')}
-            className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition shrink-0 ${
-              activeTab === 'users'
-                ? 'bg-accent-teal/15 text-accent-teal border border-accent-teal/30'
-                : 'text-surface-400 hover:text-white hover:bg-surface-800/60'
-            }`}
-          >
-            <Users className="w-4 h-4" />
-            <span>User Management</span>
           </button>
 
           <button
@@ -2315,7 +2324,7 @@ export default function AdminDashboardPage() {
             }`}
           >
             <Megaphone className="w-4 h-4" />
-            <span>Campaigns & Tracking</span>
+            <span>Campaigns</span>
           </button>
 
           <button
@@ -2327,7 +2336,7 @@ export default function AdminDashboardPage() {
             }`}
           >
             <AlertTriangle className="w-4 h-4" />
-            <span>Moderation & Reports</span>
+            <span>Reports</span>
           </button>
 
           {process.env.NODE_ENV !== 'production' && (

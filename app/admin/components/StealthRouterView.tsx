@@ -82,6 +82,17 @@ interface LedgerRow {
   country: string;
   countryCode: string;
   flag: string;
+  ip: string;
+  source: string;
+  utmSource: string;
+  utmMedium: string;
+  utmContent: string;
+  fbclid: string;
+  referrer: string;
+  scrmCustomerId: string;
+  mismatchFlag: boolean;
+  notes: string;
+  isAdminTest: boolean;
   deviceSummary: string;
   os: string;
   browser: string;
@@ -174,6 +185,9 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
   const [ledgerSearch, setLedgerSearch] = useState('');
   const [ledgerAgentFilter, setLedgerAgentFilter] = useState('');
   const [ledgerQualityFilter, setLedgerQualityFilter] = useState('all');
+  const [includeAdminTests, setIncludeAdminTests] = useState(false);
+  const [expandedLedgerId, setExpandedLedgerId] = useState<string | null>(null);
+  const [currentAdminIp, setCurrentAdminIp] = useState('');
 
   // Agent add/edit modal state
   const [agentModalOpen, setAgentModalOpen] = useState(false);
@@ -213,12 +227,14 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
       if (ledgerAgentFilter) qs.set('agentId', ledgerAgentFilter);
       if (ledgerQualityFilter !== 'all') qs.set('quality', ledgerQualityFilter);
       if (ledgerSearch.trim()) qs.set('search', ledgerSearch.trim());
+      if (includeAdminTests) qs.set('includeAdminTests', 'true');
 
       const res = await adminFetch(`/api/admin/stealth-router?${qs.toString()}`);
       const json = await res.json();
       if (res.ok && json?.success && json.data) {
         setConfig(json.data.config);
         setConfigDraft((prev) => prev || json.data.config);
+        setCurrentAdminIp(json.data.currentAdminIp || '');
         setSummary(json.data.summary);
         setAgentStats(json.data.agentStats || []);
         setLedger(json.data.ledger || []);
@@ -230,7 +246,7 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
     } finally {
       setLoading(false);
     }
-  }, [adminFetch, range, ledgerAgentFilter, ledgerQualityFilter, ledgerSearch]);
+  }, [adminFetch, range, ledgerAgentFilter, ledgerQualityFilter, ledgerSearch, includeAdminTests]);
 
   useEffect(() => {
     void loadData();
@@ -872,27 +888,6 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                         <div className="text-[11px] text-surface-400">
                           {agent.roleLabel} • <code className="text-surface-500">{agent.id}</code>
                         </div>
-                        <div className="mt-1.5">
-                          <select
-                            data-testid={`country-filter-${idx}`}
-                            disabled={saving}
-                            value={agent.countryFilter || 'ALL'}
-                            onChange={(e) =>
-                              void handleQuickUpdateAgent(
-                                agent.id,
-                                { countryFilter: e.target.value },
-                                `Country pool for ${agent.name} set to ${e.target.value}.`
-                              )
-                            }
-                            className="bg-surface-900 border border-surface-700 rounded-lg px-2 py-1 text-[10px] font-semibold text-surface-200 cursor-pointer"
-                          >
-                            {COUNTRY_FILTER_OPTIONS.map((opt) => (
-                              <option key={opt.id} value={opt.id}>
-                                {opt.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
                       </td>
                       <td className="py-3.5 px-4">
                         <div className="font-mono text-emerald-300 font-semibold">
@@ -1186,6 +1181,15 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                 <option value="standard">Standard</option>
                 <option value="low">Low / Filtered</option>
               </select>
+              <label className="inline-flex items-center gap-1.5 px-2.5 py-2 rounded-xl bg-surface-900 border border-surface-800 text-[11px] text-surface-300 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={includeAdminTests}
+                  onChange={(e) => setIncludeAdminTests(e.target.checked)}
+                  className="rounded border-surface-600"
+                />
+                Show Admin Tests
+              </label>
             </div>
           </div>
 
@@ -1198,8 +1202,8 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                     <th className="py-3 px-4">Customer & WhatsApp</th>
                     <th className="py-3 px-4">Quality Score</th>
                     <th className="py-3 px-4">Assigned Agent</th>
-                    <th className="py-3 px-4">Location & Device</th>
-                    <th className="py-3 px-4">Campaign & Stealth</th>
+                    <th className="py-3 px-4">Country & Source</th>
+                    <th className="py-3 px-4 text-right">Details</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-surface-800/70 text-xs">
@@ -1210,76 +1214,109 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                       </td>
                     </tr>
                   ) : (
-                    ledger.map((row) => (
-                      <tr key={row.id} className="hover:bg-surface-900/40 transition">
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          <span className="font-mono font-extrabold text-white bg-surface-800 px-2 py-0.5 rounded-md border border-surface-700">
-                            #{row.leadCode}
-                          </span>
-                          <div className="text-[11px] text-surface-400 mt-1">
-                            {formatTimeAgo(row.createdAt)}
-                          </div>
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className="font-bold text-white">{row.customerName}</div>
-                          {row.customerPhone ? (
-                            <a
-                              href={`https://wa.me/${row.customerPhone.replace(/\D/g, '')}`}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center gap-1 font-mono text-emerald-400 hover:underline mt-0.5"
-                            >
-                              <Phone className="w-3 h-3" />
-                              {row.customerPhone}
-                            </a>
-                          ) : (
-                            <span className="text-surface-500 text-[11px]">No number captured</span>
-                          )}
-                        </td>
-                        <td className="py-3 px-4">
-                          <span
-                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase border ${qualityBadgeClass(
-                              row.qualityTier
-                            )}`}
-                          >
-                            {row.qualityTier} • {row.qualityScore}
-                          </span>
-                          <div className="text-[11px] text-surface-400 mt-0.5">
-                            {row.residencyTier} / {row.occupationTier}
-                          </div>
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className="font-semibold text-white">{row.agentName}</div>
-                          <div className="text-[11px] font-mono text-surface-400">
-                            +{row.agentPhone}
-                          </div>
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className="text-surface-200">
-                            {row.flag} {row.city}, {row.country}
-                          </div>
-                          <div className="text-[11px] text-surface-500 truncate max-w-[200px]">
-                            {row.deviceSummary}
-                          </div>
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className="flex items-center gap-1.5">
-                            <span className="px-2 py-0.5 rounded bg-surface-800 text-surface-200 text-[11px]">
-                              {row.campaign}
-                            </span>
-                            {row.referrerStripped && (
+                    ledger.map((row) => {
+                      const isExpanded = expandedLedgerId === row.id;
+                      return (
+                        <React.Fragment key={row.id}>
+                          <tr className={`hover:bg-surface-900/40 transition ${row.mismatchFlag ? 'bg-rose-500/5' : ''}`}>
+                            <td className="py-3 px-4 whitespace-nowrap">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-mono font-extrabold text-white bg-surface-800 px-2 py-0.5 rounded-md border border-surface-700">
+                                  #{row.leadCode}
+                                </span>
+                                {row.isAdminTest && (
+                                  <span className="px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-[9px] font-bold text-amber-300">
+                                    ADMIN TEST
+                                  </span>
+                                )}
+                                {row.mismatchFlag && (
+                                  <span className="px-1.5 py-0.5 rounded bg-rose-500/15 border border-rose-500/30 text-[9px] font-bold text-rose-300">
+                                    MISMATCH
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[11px] text-surface-400 mt-1">
+                                {new Date(row.createdAt).toLocaleString()} ({formatTimeAgo(row.createdAt)})
+                              </div>
+                            </td>
+                            <td className="py-3 px-4">
+                              <div className="font-bold text-white">{row.customerName}</div>
+                              {row.customerPhone ? (
+                                <a
+                                  href={`https://wa.me/${row.customerPhone.replace(/\D/g, '')}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1 font-mono text-emerald-400 hover:underline mt-0.5"
+                                >
+                                  <Phone className="w-3 h-3" />
+                                  +{row.customerPhone}
+                                </a>
+                              ) : (
+                                <span className="text-surface-500 text-[11px]">Pending SCRM Sync</span>
+                              )}
+                            </td>
+                            <td className="py-3 px-4">
                               <span
-                                title="fbclid/UTM stripped before WhatsApp handoff"
-                                className="inline-flex items-center gap-0.5 text-[10px] text-emerald-400"
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase border ${qualityBadgeClass(
+                                  row.qualityTier
+                                )}`}
                               >
-                                <Lock className="w-3 h-3" /> Clean
+                                {row.qualityTier} • {row.qualityScore}
                               </span>
-                            )}
-                          </div>
-                          <div className="text-[10px] text-surface-500 mt-0.5">{row.mode}</div>
-                        </td>
-                      </tr>
-                    ))
+                            </td>
+                            <td className="py-3 px-4">
+                              <div className="font-semibold text-white">{row.agentName}</div>
+                              <div className="text-[11px] font-mono text-surface-400">
+                                +{row.agentPhone}
+                              </div>
+                            </td>
+                            <td className="py-3 px-4">
+                              <div className="text-surface-200">
+                                {row.flag} {row.city}, {row.country}
+                              </div>
+                              <div className="text-[11px] text-surface-400 mt-0.5">
+                                {row.source} • {row.campaign}
+                              </div>
+                            </td>
+                            <td className="py-3 px-4 text-right whitespace-nowrap">
+                              <button
+                                type="button"
+                                onClick={() => setExpandedLedgerId(isExpanded ? null : row.id)}
+                                className="px-2.5 py-1.5 rounded-lg bg-surface-800 hover:bg-surface-700 text-surface-200 text-[11px] font-semibold transition cursor-pointer"
+                              >
+                                {isExpanded ? 'Hide Details' : 'Details'}
+                              </button>
+                            </td>
+                          </tr>
+                          {isExpanded && (
+                            <tr className="bg-surface-950/80">
+                              <td colSpan={6} className="px-4 py-3.5 border-t border-surface-800/60">
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[11px]">
+                                  <div className="p-2.5 rounded-xl bg-surface-900/90 border border-surface-800 space-y-1">
+                                    <div className="text-surface-400 font-semibold uppercase text-[10px]">Device & Network</div>
+                                    <div className="text-white font-mono">IP: {row.ip || 'unknown'}</div>
+                                    <div className="text-surface-300">{row.deviceSummary}</div>
+                                    <div className="text-surface-500">OS: {row.os || '—'} | Browser: {row.browser || '—'}</div>
+                                  </div>
+                                  <div className="p-2.5 rounded-xl bg-surface-900/90 border border-surface-800 space-y-1">
+                                    <div className="text-surface-400 font-semibold uppercase text-[10px]">Ad Attribution</div>
+                                    <div className="text-surface-200">Campaign: <span className="font-mono text-white">{row.campaign}</span></div>
+                                    <div className="text-surface-300">UTM: {row.utmSource || '—'} / {row.utmMedium || '—'} / {row.utmContent || '—'}</div>
+                                    <div className="text-surface-500 truncate">fbclid: {row.fbclid || 'none'}</div>
+                                  </div>
+                                  <div className="p-2.5 rounded-xl bg-surface-900/90 border border-surface-800 space-y-1">
+                                    <div className="text-surface-400 font-semibold uppercase text-[10px]">SCRM & Anti-Leak</div>
+                                    <div className="text-surface-200">SCRM ID: <span className="font-mono text-emerald-300">{row.scrmCustomerId || 'Not linked yet'}</span></div>
+                                    <div className="text-surface-300 truncate">Referrer: {row.referrer || 'Direct / Stripped'}</div>
+                                    {row.notes && <div className="text-amber-300">Note: {row.notes}</div>}
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -1843,6 +1880,199 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
               </div>
             </div>
           </div>
+
+          {/* Admin IP Shield, SCRM Real-Time Sync & Meta CAPI */}
+          <div className="xl:col-span-12 glass-card p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-surface-800 pb-3">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-accent-teal" />
+                <h3 className="text-sm font-bold text-white">
+                  Admin IP Shield, SCRM Real-Time Sync &amp; Meta Conversions API (CAPI)
+                </h3>
+              </div>
+              <label className="inline-flex items-center gap-2 text-xs text-surface-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={configDraft.ignoreAdminTests !== false}
+                  onChange={async (e) => {
+                    const nextVal = e.target.checked;
+                    setConfigDraft({ ...configDraft, ignoreAdminTests: nextVal });
+                    await adminFetch('/api/admin/stealth-router', {
+                      method: 'POST',
+                      body: JSON.stringify({
+                        action: 'save_config',
+                        config: { ignoreAdminTests: nextVal },
+                      }),
+                    });
+                    showBanner('ok', nextVal ? 'Admin test clicks excluded from lead counts.' : 'Admin test clicks counted normally.');
+                  }}
+                />
+                Exclude Admin IP/Browser Tests from Lead Counts
+              </label>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 text-xs">
+              {/* Trusted Admin IPs */}
+              <div className="p-4 rounded-2xl bg-surface-900/80 border border-surface-800 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="font-bold text-white">Trusted Admin IPs</div>
+                    <div className="text-[11px] text-surface-400">
+                      Your current IP: <code className="text-emerald-300 font-mono">{currentAdminIp || 'detecting...'}</code>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={saving || !currentAdminIp}
+                    onClick={async () => {
+                      const res = await adminFetch('/api/admin/stealth-router', {
+                        method: 'POST',
+                        body: JSON.stringify({ action: 'trust_my_ip' }),
+                      });
+                      const json = await res.json();
+                      if (res.ok && json?.success) {
+                        setConfig(json.data.config);
+                        setConfigDraft(json.data.config);
+                        showBanner('ok', `Trusted IP saved: ${json.data.ip}`);
+                      }
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-bold hover:bg-emerald-500/30 transition cursor-pointer"
+                  >
+                    + Trust My Current IP
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {(config?.trustedAdminIps || []).length === 0 ? (
+                    <span className="text-[11px] text-surface-500">
+                      No trusted IPs added yet. Click &ldquo;Trust My Current IP&rdquo; so Incognito / other browsers on your PC never pollute lead stats.
+                    </span>
+                  ) : (
+                    (config?.trustedAdminIps || []).map((ip) => (
+                      <span
+                        key={ip}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-surface-800 border border-surface-700 font-mono text-[11px] text-white"
+                      >
+                        {ip}
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const res = await adminFetch('/api/admin/stealth-router', {
+                              method: 'POST',
+                              body: JSON.stringify({ action: 'remove_trusted_ip', ip }),
+                            });
+                            const json = await res.json();
+                            if (res.ok && json?.success) {
+                              setConfig(json.data.config);
+                              setConfigDraft(json.data.config);
+                              showBanner('ok', `Removed ${ip}`);
+                            }
+                          }}
+                          className="text-rose-400 hover:text-rose-300 font-bold cursor-pointer"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* SCRM Sync + Meta CAPI */}
+              <div className="p-4 rounded-2xl bg-surface-900/80 border border-surface-800 space-y-3">
+                <div className="font-bold text-white">SCRM Real-Time Sync &amp; Meta CAPI</div>
+                <div className="space-y-2">
+                  <div>
+                    <div className="text-[11px] text-surface-400 mb-1">SCRM Webhook URL</div>
+                    <div className="flex items-center gap-2">
+                      <code className="flex-1 px-2.5 py-1.5 rounded-lg bg-surface-950 border border-surface-800 text-[11px] text-emerald-300 truncate">
+                        {originUrl}/api/integrations/scrm/lead-sync
+                      </code>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(`${originUrl}/api/integrations/scrm/lead-sync`);
+                          setCopiedQuickKey('scrm-url');
+                          setTimeout(() => setCopiedQuickKey(''), 1800);
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-surface-800 text-surface-200 hover:text-white text-[11px] cursor-pointer"
+                      >
+                        {copiedQuickKey === 'scrm-url' ? 'Copied' : 'Copy'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-[11px] text-surface-400 mb-1">SCRM Sync Secret (x-scrm-secret)</div>
+                    <div className="flex items-center gap-2">
+                      <code className="flex-1 px-2.5 py-1.5 rounded-lg bg-surface-950 border border-surface-800 text-[11px] text-amber-300 truncate">
+                        {config?.scrmSyncSecret || 'Not generated yet'}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const res = await adminFetch('/api/admin/stealth-router', {
+                            method: 'POST',
+                            body: JSON.stringify({ action: 'generate_scrm_secret' }),
+                          });
+                          const json = await res.json();
+                          if (res.ok && json?.success) {
+                            setConfig(json.data.config);
+                            setConfigDraft(json.data.config);
+                            showBanner('ok', 'Generated new SCRM sync secret.');
+                          }
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-accent-teal/20 border border-accent-teal/40 text-accent-teal text-[11px] font-bold cursor-pointer"
+                      >
+                        Generate
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                    <input
+                      type="text"
+                      value={configDraft.metaPixelId || ''}
+                      onChange={(e) => setConfigDraft({ ...configDraft, metaPixelId: e.target.value })}
+                      placeholder="Meta Pixel ID (optional)"
+                      className="input-field text-[11px]"
+                    />
+                    <input
+                      type="password"
+                      value={configDraft.metaCapiToken || ''}
+                      onChange={(e) => setConfigDraft({ ...configDraft, metaCapiToken: e.target.value })}
+                      placeholder="Meta CAPI Access Token"
+                      className="input-field text-[11px]"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const res = await adminFetch('/api/admin/stealth-router', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                          action: 'save_config',
+                          config: {
+                            metaPixelId: configDraft.metaPixelId || '',
+                            metaCapiToken: configDraft.metaCapiToken || '',
+                          },
+                        }),
+                      });
+                      const json = await res.json();
+                      if (res.ok && json?.success) {
+                        setConfig(json.data.config);
+                        setConfigDraft(json.data.config);
+                        showBanner('ok', 'Meta Pixel & CAPI settings saved.');
+                      }
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-surface-800 hover:bg-surface-700 text-white text-[11px] font-bold cursor-pointer"
+                  >
+                    Save Meta CAPI Settings
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1994,24 +2224,6 @@ export default function StealthRouterView({ adminFetch }: StealthRouterViewProps
                   >
                     <option value="unlimited">♾️ Unlimited (Manual Off)</option>
                     <option value="limited">🎯 Stop at Target Limit</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-surface-300 mb-1">
-                    Country Pool (For Country Ads)
-                  </label>
-                  <select
-                    value={agentForm.countryFilter}
-                    onChange={(e) =>
-                      setAgentForm({ ...agentForm, countryFilter: e.target.value })
-                    }
-                    className="input-field w-full text-xs"
-                  >
-                    {COUNTRY_FILTER_OPTIONS.map((opt) => (
-                      <option key={opt.id} value={opt.id}>
-                        {opt.label}
-                      </option>
-                    ))}
                   </select>
                 </div>
               </div>

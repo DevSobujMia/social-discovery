@@ -1,7 +1,9 @@
 import { NextRequest } from 'next/server';
+import crypto from 'crypto';
 import { prisma } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
 import { success, error, handleApiError } from '@/lib/api-helpers';
+import { resolveVisitorGeo } from '@/lib/geo';
 import {
   cleanPhoneDigits,
   getStealthConfig,
@@ -31,6 +33,17 @@ interface LedgerRow {
   country: string;
   countryCode: string;
   flag: string;
+  ip: string;
+  source: string;
+  utmSource: string;
+  utmMedium: string;
+  utmContent: string;
+  fbclid: string;
+  referrer: string;
+  scrmCustomerId: string;
+  mismatchFlag: boolean;
+  notes: string;
+  isAdminTest: boolean;
   deviceSummary: string;
   os: string;
   browser: string;
@@ -92,16 +105,18 @@ export async function GET(req: NextRequest) {
     const filterAgentId = (sp.get('agentId') || '').trim();
     const filterQuality = (sp.get('quality') || '').trim().toLowerCase();
     const search = (sp.get('search') || '').trim().toLowerCase();
+    const includeAdminTests = sp.get('includeAdminTests') === 'true';
 
     const since = getRangeStart(range);
     const startOfToday = new Date();
     startOfToday.setUTCHours(0, 0, 0, 0);
 
-    const [config, events, todayEvents] = await Promise.all([
+    const [config, adminGeo, events, todayEvents] = await Promise.all([
       getStealthConfig(),
+      resolveVisitorGeo(req.headers).catch(() => null),
       prisma.analyticsEvent.findMany({
         where: {
-          eventType: 'wa_redirect',
+          eventType: { in: ['wa_redirect', 'scrm_lead'] },
           ...(since ? { createdAt: { gte: since } } : {}),
         },
         orderBy: { createdAt: 'desc' },
@@ -109,7 +124,7 @@ export async function GET(req: NextRequest) {
       }),
       prisma.analyticsEvent.findMany({
         where: {
-          eventType: 'wa_redirect',
+          eventType: { in: ['wa_redirect', 'scrm_lead'] },
           createdAt: { gte: startOfToday },
         },
         select: { eventData: true, createdAt: true },
@@ -130,6 +145,7 @@ export async function GET(req: NextRequest) {
     const todayByAgent = new Map<string, number>();
     for (const ev of todayEvents) {
       const data = ev.eventData as Record<string, unknown> | null;
+      if (data?.isAdminTest === true) continue;
       const aId = typeof data?.agentId === 'string' ? data.agentId : '';
       if (!aId) continue;
       const resetMs = agentResetMap.get(aId);
@@ -163,6 +179,11 @@ export async function GET(req: NextRequest) {
         ? ev.eventData
         : {}) as Record<string, unknown>;
 
+      const isAdminTest = data.isAdminTest === true;
+      if (isAdminTest && !includeAdminTests) {
+        continue;
+      }
+
       const agentId = typeof data.agentId === 'string' ? data.agentId : 'unknown';
       const agentName = typeof data.agentName === 'string' ? data.agentName : 'Unassigned';
       const agentPhone = typeof data.agentPhone === 'string' ? data.agentPhone : '';
@@ -172,25 +193,27 @@ export async function GET(req: NextRequest) {
         typeof data.customerPhone === 'string' ? data.customerPhone : '';
       const createdAtIso = ev.createdAt.toISOString();
 
-      if (qualityTier === 'vip') vipLeads += 1;
-      else if (qualityTier === 'low') lowLeads += 1;
-      else standardLeads += 1;
+      if (!isAdminTest) {
+        if (qualityTier === 'vip') vipLeads += 1;
+        else if (qualityTier === 'low') lowLeads += 1;
+        else standardLeads += 1;
 
-      if (customerPhone) capturedPhones += 1;
+        if (customerPhone) capturedPhones += 1;
 
-      const existingAgg = agentAggMap.get(agentId) || {
-        totalLeads: 0,
-        vipLeads: 0,
-        capturedPhones: 0,
-        lastLeadAt: null,
-        nameFallback: agentName,
-        phoneFallback: agentPhone,
-      };
-      existingAgg.totalLeads += 1;
-      if (qualityTier === 'vip') existingAgg.vipLeads += 1;
-      if (customerPhone) existingAgg.capturedPhones += 1;
-      if (!existingAgg.lastLeadAt) existingAgg.lastLeadAt = createdAtIso;
-      agentAggMap.set(agentId, existingAgg);
+        const existingAgg = agentAggMap.get(agentId) || {
+          totalLeads: 0,
+          vipLeads: 0,
+          capturedPhones: 0,
+          lastLeadAt: null,
+          nameFallback: agentName,
+          phoneFallback: agentPhone,
+        };
+        existingAgg.totalLeads += 1;
+        if (qualityTier === 'vip') existingAgg.vipLeads += 1;
+        if (customerPhone) existingAgg.capturedPhones += 1;
+        if (!existingAgg.lastLeadAt) existingAgg.lastLeadAt = createdAtIso;
+        agentAggMap.set(agentId, existingAgg);
+      }
 
       const dev = extractDeviceSummary(data.device);
 
@@ -215,6 +238,17 @@ export async function GET(req: NextRequest) {
         country: typeof data.country === 'string' ? data.country : 'Unknown',
         countryCode: typeof data.countryCode === 'string' ? data.countryCode : '',
         flag: typeof data.flag === 'string' ? data.flag : '',
+        ip: typeof data.ip === 'string' ? data.ip : '',
+        source: typeof data.source === 'string' ? data.source : 'direct',
+        utmSource: typeof data.utmSource === 'string' ? data.utmSource : '',
+        utmMedium: typeof data.utmMedium === 'string' ? data.utmMedium : '',
+        utmContent: typeof data.utmContent === 'string' ? data.utmContent : '',
+        fbclid: typeof data.fbclid === 'string' ? data.fbclid : '',
+        referrer: typeof data.referrer === 'string' ? data.referrer : '',
+        scrmCustomerId: typeof data.scrmCustomerId === 'string' ? data.scrmCustomerId : '',
+        mismatchFlag: data.mismatchFlag === true,
+        notes: typeof data.notes === 'string' ? data.notes : '',
+        isAdminTest,
         deviceSummary: dev.summary,
         os: dev.os,
         browser: dev.browser,
@@ -223,7 +257,10 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const totalRedirects = events.length;
+    const totalRedirects = Array.from(agentAggMap.values()).reduce(
+      (sum, a) => sum + a.totalLeads,
+      0
+    );
 
     const totalActiveWeight = config.agents
       .filter((a) => a.status === 'active')
@@ -275,8 +312,11 @@ export async function GET(req: NextRequest) {
           row.agentName,
           row.agentPhone,
           row.campaign,
+          row.source,
           row.city,
           row.country,
+          row.ip,
+          row.scrmCustomerId,
         ]
           .join(' ')
           .toLowerCase();
@@ -287,11 +327,16 @@ export async function GET(req: NextRequest) {
       return true;
     });
 
+    const realTodayRedirects = todayEvents.filter(
+      (ev) => (ev.eventData as Record<string, unknown> | null)?.isAdminTest !== true
+    ).length;
+
     return success({
       config,
+      currentAdminIp: adminGeo?.ip || '',
       summary: {
         totalRedirects,
-        todayRedirects: todayEvents.length,
+        todayRedirects: realTodayRedirects,
         vipLeads,
         standardLeads,
         lowLeads,
@@ -570,6 +615,18 @@ export async function POST(req: NextRequest) {
           typeof patch.blockBangladesh === 'boolean'
             ? patch.blockBangladesh
             : config.blockBangladesh,
+        ignoreAdminTests:
+          typeof patch.ignoreAdminTests === 'boolean'
+            ? patch.ignoreAdminTests
+            : config.ignoreAdminTests,
+        metaPixelId:
+          typeof patch.metaPixelId === 'string'
+            ? patch.metaPixelId.trim()
+            : config.metaPixelId,
+        metaCapiToken:
+          typeof patch.metaCapiToken === 'string'
+            ? patch.metaCapiToken.trim()
+            : config.metaCapiToken,
         requirePhoneCapture:
           typeof patch.requirePhoneCapture === 'boolean'
             ? patch.requirePhoneCapture
@@ -629,6 +686,31 @@ export async function POST(req: NextRequest) {
       });
 
       return success({ config: updated, message: 'Router configuration updated.' });
+    }
+
+    if (action === 'trust_my_ip') {
+      const geo = await resolveVisitorGeo(req.headers).catch(() => null);
+      const targetIp =
+        typeof body.ip === 'string' && body.ip.trim() ? body.ip.trim() : geo?.ip || '';
+      if (!targetIp || targetIp === 'unknown') {
+        return error('Could not detect your current IP address.', 400);
+      }
+      const nextIps = Array.from(new Set([...config.trustedAdminIps, targetIp]));
+      const updated = await saveStealthConfig({ trustedAdminIps: nextIps });
+      return success({ config: updated, ip: targetIp, message: `Trusted Admin IP added: ${targetIp}` });
+    }
+
+    if (action === 'remove_trusted_ip') {
+      const targetIp = typeof body.ip === 'string' ? body.ip.trim() : '';
+      const nextIps = config.trustedAdminIps.filter((ip) => ip !== targetIp);
+      const updated = await saveStealthConfig({ trustedAdminIps: nextIps });
+      return success({ config: updated, message: `Removed IP ${targetIp}` });
+    }
+
+    if (action === 'generate_scrm_secret') {
+      const secret = `ch_scrm_${crypto.randomBytes(18).toString('hex')}`;
+      const updated = await saveStealthConfig({ scrmSyncSecret: secret });
+      return success({ config: updated, scrmSyncSecret: secret, message: 'New SCRM sync secret generated.' });
     }
 
     return error(`Unsupported action: ${action}`, 400);

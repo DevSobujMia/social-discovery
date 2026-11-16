@@ -91,6 +91,20 @@ function classifyVisitor(
   spyReasons: string[];
   isExplicitlyTagged: boolean;
 } {
+  const isTrustedAdminIp =
+    stealthConfig.ignoreAdminTests !== false &&
+    Boolean(visitor.ip && stealthConfig.trustedAdminIps.includes(visitor.ip));
+  if (isTrustedAdminIp) {
+    return {
+      actorRole: 'admin',
+      actorLabel: 'Admin (Trusted IP)',
+      linkedAgentName: null,
+      spyScore: 0,
+      spyReasons: [],
+      isExplicitlyTagged: true,
+    };
+  }
+
   const vidRule = ruleByVisitorId.get(visitor.visitorId);
   const rawIpRule =
     visitor.ip && visitor.ip !== 'unknown' && !visitor.ip.startsWith('127.')
