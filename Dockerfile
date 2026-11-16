@@ -61,8 +61,8 @@ COPY --from=builder --chown=nextjs:nodejs /app/scripts/seed.mjs ./scripts/seed.m
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/bcryptjs ./node_modules/bcryptjs
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@types ./node_modules/@types
 
-# Uploads directory (existing seed photos & uploads)
-COPY --chown=nextjs:nodejs uploads ./uploads
+# Uploads directory (ensure dir exists even if empty in fresh git clone)
+RUN mkdir -p /app/uploads && chown -R nextjs:nodejs /app/uploads
 
 # Entrypoint
 COPY --chown=nextjs:nodejs docker-entrypoint.sh /app/docker-entrypoint.sh
